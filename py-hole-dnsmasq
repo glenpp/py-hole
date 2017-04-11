@@ -54,20 +54,20 @@ else:
 
 
 # our hostsfile
-hostsdata = "# created %d\n" % int(time.time())
+outputdata = "# created %d\n" % int(time.time())
 seenbefore = {}
 commentstart = '#'    # for hosts / dnsmasq
 def addcomment ( comment ):
-    global hostsdata
-    hostsdata += ";%s\n" % comment
+    global outputdata
+    outputdata += ";%s\n" % comment
 def addhost ( host ):
-    global hostsdata
+    global outputdata
     host = host.lower().strip()
     if host in seenbefore:
-        hostsdata += "%s seenbefore in %s %s" % (commentstart,seenbefore[host],commentstart)
+        outputdata += "%s seenbefore in %s %s" % (commentstart,seenbefore[host],commentstart)
     if host in config['exclusions']:
-        hostsdata += "%s excluded %s" % (commentstart,commentstart)
-    hostsdata += "%s %s\n" % (host,config['defaultresponse'])
+        outputdata += "%s excluded %s" % (commentstart,commentstart)
+    outputdata += "%s %s\n" % (host,config['defaultresponse'])
     seenbefore[host] = source
 
 
@@ -96,9 +96,9 @@ for source in config['blacklists']:
         # all done
         data = response.data
     # we are good to go
-    hostsdata += "#=============================================================================\n"
-    hostsdata += "# Source: %s :: %s\n" % (source,config['blacklists'][source]['url'])
-    hostsdata += "#=============================================================================\n\n"
+    outputdata += "#=============================================================================\n"
+    outputdata += "# Source: %s :: %s\n" % (source,config['blacklists'][source]['url'])
+    outputdata += "#=============================================================================\n\n"
     # process data
     recordcount = 0
     if config['blacklists'][source]['format'] == 'hosts':
@@ -136,7 +136,7 @@ for source in config['blacklists']:
 
 # write the config['hostsfile'] file
 with open ( config['hostsfile']+'.TMP', 'wt' ) as f:
-    f.write ( hostsdata )
+    f.write ( outputdata )
 os.rename ( config['hostsfile'], config['hostsfile']+'.old' )
 os.rename ( config['hostsfile']+'.TMP', config['hostsfile'] )
 

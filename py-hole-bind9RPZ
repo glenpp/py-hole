@@ -48,20 +48,20 @@ if 'reloadzonecommand' not in config:
 
 
 # build our zone
-zonedata = re.sub ( r'<SERIAL>', '%010d' % int(time.time()), config['rpztemplate'] )
+outputdata = re.sub ( r'<SERIAL>', '%010d' % int(time.time()), config['rpztemplate'] )
 seenbefore = {}
 commentstart = ';'    # for bind
 def addcomment ( comment ):
-    global zonedata
-    zonedata += ";%s\n" % comment
+    global outputdata
+    outputdata += ";%s\n" % comment
 def addhost ( host ):
-    global zonedata
+    global outputdata
     host = host.lower().strip()
     if host in seenbefore:
-        zonedata += "%s seenbefore in %s %s" % (commentstart,seenbefore[host],commentstart)
+        outputdata += "%s seenbefore in %s %s" % (commentstart,seenbefore[host],commentstart)
     if host in config['exclusions']:
-        zonedata += "%s excluded %s" % (commentstart,commentstart)
-    zonedata += "%s %s\n" % (host,config['defaultresponse'])
+        outputdata += "%s excluded %s" % (commentstart,commentstart)
+    outputdata += "%s %s\n" % (host,config['defaultresponse'])
     seenbefore[host] = source
 
 
@@ -90,9 +90,9 @@ for source in config['blacklists']:
         # all done
         data = response.data
     # we are good to go
-    zonedata += ";=============================================================================\n"
-    zonedata += "; Source: %s :: %s\n" % (source,config['blacklists'][source]['url'])
-    zonedata += ";=============================================================================\n\n"
+    outputdata += ";=============================================================================\n"
+    outputdata += "; Source: %s :: %s\n" % (source,config['blacklists'][source]['url'])
+    outputdata += ";=============================================================================\n\n"
     # process data
     recordcount = 0
     if config['blacklists'][source]['format'] == 'hosts':
@@ -130,7 +130,7 @@ for source in config['blacklists']:
 
 # write the config['rpzfile'] file
 with open ( config['rpzfile']+'.TMP', 'wt' ) as f:
-    f.write ( zonedata )
+    f.write ( outputdata )
 os.rename ( config['rpzfile'], config['rpzfile']+'.old' )
 os.rename ( config['rpzfile']+'.TMP', config['rpzfile'] )
 # reload bind zone file
