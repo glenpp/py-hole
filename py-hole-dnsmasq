@@ -67,7 +67,7 @@ def addhost ( host ):
         outputdata += "%s seenbefore in %s %s" % (commentstart,seenbefore[host],commentstart)
     if host in config['exclusions']:
         outputdata += "%s excluded %s" % (commentstart,commentstart)
-    outputdata += "%s %s\n" % (host,config['defaultresponse'])
+    outputdata += "%s %s\n" % (config['defaultresponse'],host)
     seenbefore[host] = source
 
 
