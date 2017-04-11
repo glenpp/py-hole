@@ -53,7 +53,7 @@ seenbefore = {}
 commentstart = ';'    # for bind
 def addcomment ( comment ):
     global outputdata
-    outputdata += ";%s\n" % comment
+    outputdata += "%s%s\n" % (commentstart,comment)
 def addhost ( host ):
     global outputdata
     host = host.lower().strip()
