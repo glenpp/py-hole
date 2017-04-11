@@ -19,11 +19,11 @@ rpztemplate: |
   ;
 # end of template
 
-cachedir: /var/local/bindRPZ
-cacheprefix: bindRPZcache-
-cacheexpire: 14400  # 4 hours
+#cachedir: /var/local/bindRPZ
+#cacheprefix: bindRPZcache-
+#cacheexpire: 14400  # 4 hours
 reloadzonecommand: [ 'rndc', 'reload', 'rpz.example.com' ]
-defaultresponse: CNAME .
+#defaultresponse: CNAME .
 
 
 # see https://github.com/pi-hole/pi-hole/blob/master/adlists.default

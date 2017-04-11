@@ -1,6 +1,12 @@
 ---
+#cachedir: /var/local/py-hole
+#cacheprefix: cache-
+#cacheexpire: 14400  # 4 hours
+#defaultresponse: 0.0.0.0
+
 hostsfile: /etc/local-hosts-blackhole
 dnsmasqblackholeconfig: /etc/dnsmasq.d/local-hosts-blackhole
+
 
 # see https://github.com/pi-hole/pi-hole/blob/master/adlists.default
 # Note: the moment we specify blacklists, the base key completely replaces defaults
