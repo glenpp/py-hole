@@ -1,0 +1,138 @@
+#!/usr/bin/python
+# update bind9 RPZ file
+
+
+import yaml
+import time
+import re
+import os
+import urllib3
+import sys
+import subprocess
+
+
+
+
+
+
+# read config
+configfile = '/etc/bind/py-hole-rpzconfig.yaml'
+config = {
+    # base config overridden by configfile
+    'cachedir': '/var/local/bindRPZ',
+    'cacheprefix': 'bindRPZcache-',
+    'cacheexpire': 14400,    # 4 hours
+    'defaultresponse': 'CNAME .',
+    'exclusions': {},
+    'blacklists': {
+        'StevenBlack': { 'url':'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts', 'format':'hosts', 'hostskey':'0.0.0.0' },
+    },
+}
+# load yaml file or error
+if os.path.isfile ( configfile ):
+    with open ( configfile, 'r' ) as f:
+        config.update ( yaml.load(f) )
+    # always exclude localhost else we get it blocked for 127.0.0.1 keys
+    config['exclusions']['localhost'] = True
+else:
+    sys.exit ( "Configuration file %s not found\n" % configfile )
+# at minimum we need to end up with an rpzfile
+if 'rpzfile' not in config:
+    sys.exit ( "Setting for 'rpzfile' not found in configuration %s\n" % configfile )
+# and a template with a serial number
+if 'rpztemplate' not in config or not re.search ( r'<SERIAL>', config['rpztemplate'] ):
+    sys.exit ( "Setting for 'rpztemplate' including a serial number marker '<SERIAL>' not found in configuration %s\n" % configfile )
+# and a reloadzonecommand:
+if 'reloadzonecommand' not in config:
+    sys.exit ( "Setting for 'reloadzonecommand' not found in configuration %s\n" % configfile )
+
+
+# build our zone
+zonedata = re.sub ( r'<SERIAL>', '%010d' % int(time.time()), config['rpztemplate'] )
+seenbefore = {}
+commentstart = ';'    # for bind
+def addcomment ( comment ):
+    global zonedata
+    zonedata += ";%s\n" % comment
+def addhost ( host ):
+    global zonedata
+    host = host.lower().strip()
+    if host in seenbefore:
+        zonedata += "%s seenbefore in %s %s" % (commentstart,seenbefore[host],commentstart)
+    if host in config['exclusions']:
+        zonedata += "%s excluded %s" % (commentstart,commentstart)
+    zonedata += "%s %s\n" % (host,config['defaultresponse'])
+    seenbefore[host] = source
+
+
+# grab from web or cache
+cacheupto = time.time() - config['cacheexpire']
+if not os.path.isdir ( config['cachedir'] ):
+    os.makedirs ( config['cachedir'] )
+http = urllib3.PoolManager ()
+httpheaders = { 'User-Agent': 'py-hole RPZ blackhole manager' }
+for source in config['blacklists']:
+    cachefile = os.path.join ( config['cachedir'], config['cacheprefix'] + source )
+    # check cache, download if needed
+    if os.path.isfile ( cachefile ) and os.path.getmtime ( cachefile ) >= cacheupto:
+        print "fresh cache %s" % config['blacklists'][source]['url']
+        with open ( cachefile, 'rt' ) as f:
+            data = f.read ()
+    else:
+        print "retrieve %s" % config['blacklists'][source]['url']
+        response = http.request ( 'GET', config['blacklists'][source]['url'], headers=httpheaders )
+        if response.status != 200:
+            sys.exit ( "ERROR - got http response %d for %s" % (response.status,config['blacklists'][source]['url']) )
+        # write cache file
+        with open ( cachefile+'.TMP', 'wt' ) as f:
+            f.write ( response.data )
+        os.rename ( cachefile+'.TMP', cachefile )
+        # all done
+        data = response.data
+    # we are good to go
+    zonedata += ";=============================================================================\n"
+    zonedata += "; Source: %s :: %s\n" % (source,config['blacklists'][source]['url'])
+    zonedata += ";=============================================================================\n\n"
+    # process data
+    recordcount = 0
+    if config['blacklists'][source]['format'] == 'hosts':
+        # comments start "#", we only take lines matching "hostskey"
+        for line in data.splitlines():
+            if line == '':
+                continue
+            if line[0] == '#':
+                addcomment ( line[1:] )
+                continue
+            hostlist = re.split ( r'\s+', line )
+            if hostlist[0] != config['blacklists'][source]['hostskey']:
+                # not a matching key
+                continue
+            for host in hostlist[1:]:
+                recordcount += 1
+                addhost ( host )
+                seenbefore[host.lower()] = source
+    elif config['blacklists'][source]['format'] == 'raw':
+        # comments start "#"
+        for line in data.splitlines():
+            if line == '':
+                continue
+            if line[0] == '#':
+                addcomment ( line[1:] )
+                continue
+            host = line.strip()
+            recordcount += 1
+            addhost ( host )
+    else:
+        sys.exit ( "Unknown format %s for %s" % (config['blacklists'][source]['format'],source) )
+    if recordcount == 0:
+        sys.exit ( "Got recordcount of %d for %s" % (recordcount,source) )
+
+
+# write the config['rpzfile'] file
+with open ( config['rpzfile']+'.TMP', 'wt' ) as f:
+    f.write ( zonedata )
+os.rename ( config['rpzfile'], config['rpzfile']+'.old' )
+os.rename ( config['rpzfile']+'.TMP', config['rpzfile'] )
+# reload bind zone file
+p = subprocess.Popen ( config['reloadzonecommand'], stdin=None, stdout=None )
+

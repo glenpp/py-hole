@@ -1,0 +1,57 @@
+---
+
+rpzfile: /etc/bind/db.rpz.example.com
+rpztemplate: |
+  ; see http://www.zytrax.com/books/dns/ch9/rpz.html
+  ; zone file rpz.example.com
+  $TTL 2h ; default TTL
+  $ORIGIN rpz.example.com.
+  ; email address is never used
+  @ SOA nonexistent.nodomain.none. dummy.nodomain.none. <SERIAL> 12h 15m 3w 2h
+  ; name server is never accessed but out-of-zone
+  ;         NS  nonexistant.nodomain.none
+    NS  boni.example.com.
+  
+  ;example.net CNAME .
+  ;*.example.net CNAME .
+  
+  ; Automatic rules start
+  ;
+# end of template
+
+cachedir: /var/local/bindRPZ
+cacheprefix: bindRPZcache-
+cacheexpire: 14400  # 4 hours
+reloadzonecommand: [ 'rndc', 'reload', 'rpz.example.com' ]
+defaultresponse: CNAME .
+
+
+# see https://github.com/pi-hole/pi-hole/blob/master/adlists.default
+# Note: the moment we specify blacklists, the base key completely replaces defaults
+blacklists:
+  StevenBlack:
+    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+    format: hosts
+    hostskey: 0.0.0.0
+  malwaredomains: { url: 'https://mirror1.malwaredomains.com/files/justdomains', format: raw }
+  cameleon: { 'url':'http://sysctl.org/cameleon/hosts', 'format':'hosts', 'hostskey':'127.0.0.1' }
+  abuse.ch: { 'url':'https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist', 'format':'raw' }
+  disconnect.me_tracking: { 'url':'https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt', 'format':'raw' }
+  disconnect.me_ad: { 'url':'https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt', 'format':'raw' }
+#  hosts-file.net: { 'url':'https://hosts-file.net/ad_servers.txt', 'format':'hosts0000' }
+#  Windows 10 telemetry: {
+  securemecca.com: { 'url':'http://securemecca.com/Downloads/hosts.txt', 'format':'hosts', 'hostskey':'127.0.0.1' }
+# currently we support formats of:
+#   * raw
+#       - considers lines starting "#" as comments
+#       - one hostname per line
+#   * hosts
+#       - considers lines starting "#" as comments
+#       - requires "hostskey" matching the IP at the start of the line (anything else ignored)
+#       - multiple hosts per line (typical hosts file with aliases)
+
+exclusions:
+  www.googleadservices.com: True  # needed for google shopping
+  pagead.l.doubleclick.net: True  # CNAME for www.googleadservices.com needed for google shopping
+# Note that "localhost" is always excluded t prevent conflicts
+
