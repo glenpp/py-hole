@@ -37,3 +37,7 @@ exclusions:
   pagead.l.doubleclick.net: True  # CNAME for www.googleadservices.com needed for google shopping
 # Note that "localhost" is always excluded t prevent conflicts
 
+# we can also add our own local backlist
+#localblacklist:
+#  - evilhost.example.com  # going there does evil stuff
+
