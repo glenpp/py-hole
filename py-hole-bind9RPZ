@@ -16,7 +16,7 @@ import subprocess
 
 
 # read config
-configfile = '/etc/bind/py-hole-rpzconfig.yaml'
+configfile = '/etc/bind/py-hole-bind9RPZ_config.yaml'
 config = {
     # base config overridden by configfile
     'cachedir': '/var/local/bindRPZ',

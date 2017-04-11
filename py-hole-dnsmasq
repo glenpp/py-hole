@@ -17,7 +17,7 @@ import subprocess
 
 
 # read config
-configfile = '/etc/py-hole-config.yaml'
+configfile = '/etc/py-hole-dnsmasq_config.yaml'
 config = {
     # base config overridden by configfile
     'cachedir': '/var/local/py-hole',
