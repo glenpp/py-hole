@@ -1,5 +1,24 @@
 #!/usr/bin/python
-# update bind9 RPZ file
+"""
+Manages bind9 RPZ file (DNS Firewall) against configured blacklists
+Copyright (C) 2017  Glen Pitt-Pladdy
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+See: https://www.pitt-pladdy.com/blog/_20170407-105402_0100_DNS_Firewall_blackhole_malicious_like_Pi-hole_with_bind9/
+"""
 
 
 import yaml
