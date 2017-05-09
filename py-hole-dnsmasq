@@ -164,14 +164,15 @@ if 'localblacklist' in config:
 # write the config['hostsfile'] file
 with open ( config['hostsfile']+'.TMP', 'wt' ) as f:
     f.write ( outputdata )
-os.rename ( config['hostsfile'], config['hostsfile']+'.old' )
+if os.path.isfile ( config['hostsfile'] ):
+    os.rename ( config['hostsfile'], config['hostsfile']+'.old' )
 os.rename ( config['hostsfile']+'.TMP', config['hostsfile'] )
 
 
 # ensure we have a dnsmasq config file - we assume if it's there it's sufficient TODO maybe we should check
 if not os.path.isfile ( config['dnsmasqblackholeconfig'] ):
     with open ( config['dnsmasqblackholeconfig']+'.TMP', 'wt' ) as f:
-        f.write ( "addn-hosts=%s\n" % output )
+        f.write ( "addn-hosts=%s\n" % config['hostsfile'] )
     os.rename (  config['dnsmasqblackholeconfig']+'.TMP', config['dnsmasqblackholeconfig'] )
 # TODO reload dnsmasq (SIGHUP re-reads files, but not config)
 
