@@ -35,6 +35,10 @@ blacklists:
 exclusions:
   www.googleadservices.com: True  # needed for google shopping
   pagead.l.doubleclick.net: True  # CNAME for www.googleadservices.com needed for google shopping
+  trackersimulator.org: True  # eff testing
+  eviltracker.net: True # eff testing
+  do-not-tracker.org: True  # eff testing
+  stats.stackexchange.com: True # actually the forum about statistics!
 # Note that "localhost" is always excluded t prevent conflicts
 
 # we can also add our own local backlist
