@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 """
 Manages bind9 RPZ file (DNS Firewall) against configured blacklists
 Copyright (C) 2017  Glen Pitt-Pladdy
@@ -25,7 +25,7 @@ import yaml
 import time
 import re
 import os
-import urllib3
+import requests
 import sys
 import subprocess
 
@@ -48,70 +48,72 @@ config = {
     },
 }
 # load yaml file or error
-if os.path.isfile ( configfile ):
-    with open ( configfile, 'r' ) as f:
-        config.update ( yaml.load(f) )
+if os.path.isfile(configfile):
+    with open(configfile, 'r') as f:
+        config.update(yaml.load(f))
     # always exclude localhost else we get it blocked for 127.0.0.1 keys
     config['exclusions']['localhost'] = True
 else:
-    sys.exit ( "Configuration file %s not found\n" % configfile )
+    sys.exit("Configuration file {} not found\n".format(configfile))
 # at minimum we need to end up with an rpzfile
 if 'rpzfile' not in config:
-    sys.exit ( "Setting for 'rpzfile' not found in configuration %s\n" % configfile )
+    sys.exit("Setting for 'rpzfile' not found in configuration {}\n".format(configfile))
 # and a template with a serial number
-if 'rpztemplate' not in config or not re.search ( r'<SERIAL>', config['rpztemplate'] ):
-    sys.exit ( "Setting for 'rpztemplate' including a serial number marker '<SERIAL>' not found in configuration %s\n" % configfile )
+if 'rpztemplate' not in config or not re.search(r'<SERIAL>', config['rpztemplate']):
+    sys.exit("Setting for 'rpztemplate' including a serial number marker '<SERIAL>' not found in configuration {}\n".format(configfile))
 # and a reloadzonecommand:
 if 'reloadzonecommand' not in config:
-    sys.exit ( "Setting for 'reloadzonecommand' not found in configuration %s\n" % configfile )
+    sys.exit("Setting for 'reloadzonecommand' not found in configuration {}\n".format(configfile))
 
 
 # build our zone
-outputdata = re.sub ( r'<SERIAL>', '%010d' % int(time.time()), config['rpztemplate'] )
+outputdata = re.sub(r'<SERIAL>', '%010d' % int(time.time()), config['rpztemplate'])
 seenbefore = {}
 commentstart = ';'    # for bind
-def addcomment ( comment ):
+def addcomment(comment):
     global outputdata
-    outputdata += "%s%s\n" % (commentstart,comment)
-def addhost ( host ):
+    outputdata += "{}{}\n".format(commentstart, comment)
+def addhost(host):
     global outputdata
     host = host.lower().strip()
     if host in seenbefore:
         outputdata += "%s seenbefore in %s %s" % (commentstart,seenbefore[host],commentstart)
     if host in config['exclusions']:
-        outputdata += "%s excluded %s" % (commentstart,commentstart)
-    outputdata += "%s %s\n" % (host,config['defaultresponse'])
+        outputdata += "{} excluded {}".format(commentstart, commentstart)
+    outputline = "{} {}\n".format(host, config['defaultresponse'])
+    if len(outputline) >= 255:	# seems to be a limit from https://www.ietf.org/rfc/rfc1035.txt
+        outputdata += ';too-long '
+    outputdata += outputline
     seenbefore[host] = source
 
 
 # grab from web or cache
 cacheupto = time.time() - config['cacheexpire']
-if not os.path.isdir ( config['cachedir'] ):
-    os.makedirs ( config['cachedir'] )
-http = urllib3.PoolManager ()
+if not os.path.isdir(config['cachedir']):
+    os.makedirs(config['cachedir'])
 httpheaders = { 'User-Agent': 'py-hole RPZ blackhole manager' }
 for source in config['blacklists']:
     cachefile = os.path.join ( config['cachedir'], config['cacheprefix'] + source )
     # check cache, download if needed
     if os.path.isfile ( cachefile ) and os.path.getmtime ( cachefile ) >= cacheupto:
-        print "fresh cache %s" % config['blacklists'][source]['url']
+        print("fresh cache {}".format(config['blacklists'][source]['url']))
         with open ( cachefile, 'rt' ) as f:
             data = f.read ()
     else:
-        print "retrieve %s" % config['blacklists'][source]['url']
-        response = http.request ( 'GET', config['blacklists'][source]['url'], headers=httpheaders )
-        if response.status != 200:
-            sys.exit ( "ERROR - got http response %d for %s" % (response.status,config['blacklists'][source]['url']) )
+        print("retrieve {}".format(config['blacklists'][source]['url']))
+        response = requests.get(config['blacklists'][source]['url'], headers=httpheaders)
+        if response.status_code != 200:
+            sys.exit("ERROR - got http response {:d} for {}".format(response.status_code, config['blacklists'][source]['url']))
         # write cache file
-        with open ( cachefile+'.TMP', 'wt' ) as f:
-            f.write ( response.data )
-        os.rename ( cachefile+'.TMP', cachefile )
+        with open(cachefile+'.TMP', 'wt') as f:
+            f.write(response.text)
+        os.rename(cachefile+'.TMP', cachefile)
         # all done
-        data = response.data
+        data = response.text
     # we are good to go
-    outputdata += "\n%s=============================================================================\n" % commentstart
-    outputdata += "%s Source: %s :: %s\n" % (commentstart,source,config['blacklists'][source]['url'])
-    outputdata += "%s=============================================================================\n\n" % commentstart
+    outputdata += "\n{}=============================================================================\n".format(commentstart)
+    outputdata += "{} Source: {} :: {}\n".format(commentstart, source, config['blacklists'][source]['url'])
+    outputdata += "{}=============================================================================\n\n".format(commentstart)
     # process data
     recordcount = 0
     if config['blacklists'][source]['format'] == 'hosts':
@@ -135,30 +137,30 @@ for source in config['blacklists']:
             if line == '':
                 continue
             if line[0] == '#':
-                addcomment ( line[1:] )
+                addcomment(line[1:])
                 continue
             host = line.strip()
             recordcount += 1
-            addhost ( host )
+            addhost(host)
     else:
-        sys.exit ( "Unknown format %s for %s" % (config['blacklists'][source]['format'],source) )
+        sys.exit("Unknown format {} for {}".format(config['blacklists'][source]['format'], source))
     if recordcount == 0:
-        sys.exit ( "Got recordcount of %d for %s" % (recordcount,source) )
+        sys.exit("Got recordcount of {:d} for {}".format(recordcount, source))
 
 # if we have a local blacklist, add that also
 if 'localblacklist' in config:
-    outputdata += "\n%s=============================================================================\n" % commentstart
-    outputdata += "%s Source: Local blacklist from %s\n" % (commentstart,configfile)
-    outputdata += "%s=============================================================================\n\n" % commentstart
+    outputdata += "\n{}=============================================================================\n".format(commentstart)
+    outputdata += "{} Source: Local blacklist from {}\n".format(commentstart, configfile)
+    outputdata += "{}=============================================================================\n\n".format(commentstart)
     for host in config['localblacklist']:
-        addhost ( host )
+        addhost(host)
 
 
 # write the config['rpzfile'] file
-with open ( config['rpzfile']+'.TMP', 'wt' ) as f:
-    f.write ( outputdata )
-os.rename ( config['rpzfile'], config['rpzfile']+'.old' )
-os.rename ( config['rpzfile']+'.TMP', config['rpzfile'] )
+with open(config['rpzfile']+'.TMP', 'wt') as f:
+    f.write(outputdata)
+os.rename(config['rpzfile'], config['rpzfile']+'.old')
+os.rename(config['rpzfile']+'.TMP', config['rpzfile'])
 # reload bind zone file
-p = subprocess.Popen ( config['reloadzonecommand'], stdin=None, stdout=None )
+p = subprocess.Popen(config['reloadzonecommand'], stdin=None, stdout=None)
 
