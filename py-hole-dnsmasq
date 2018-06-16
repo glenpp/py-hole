@@ -60,7 +60,7 @@ config = {
         'disconnect.me_ad': { 'url':'https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt', 'format':'raw' },
 #        'hosts-file.net': { 'url':'https://hosts-file.net/ad_servers.txt', 'format':'hosts0000' },
 #        'Windows 10 telemetry': {
-        'securemecca.com': { 'url':'http://securemecca.com/Downloads/hosts.txt', 'format':'hosts', 'hostskey':'127.0.0.1' },
+#        'securemecca.com': { 'url':'http://securemecca.com/Downloads/hosts.txt', 'format':'hosts', 'hostskey':'127.0.0.1' },
     }
 }
 # load yaml file or error
