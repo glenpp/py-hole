@@ -123,11 +123,14 @@ for source in config['blacklists']:
     if config['blacklists'][source]['format'] == 'hosts':
         # comments start "#", we only take lines matching "hostskey"
         for line in data.splitlines():
+            # separate comments that could be whole line or after a record
+            m = re.match(r'([^#]*?)\s+#(.*)$', line)
+            if m:
+                line = m.group(1)
+                addcomment(m.group(2).lstrip())
             if line == '':
                 continue
-            if line[0] == '#':
-                addcomment ( line[1:] )
-                continue
+            # process the host line
             hostlist = re.split ( r'\s+', line )
             if hostlist[0] != config['blacklists'][source]['hostskey']:
                 # not a matching key
