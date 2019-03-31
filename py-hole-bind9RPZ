@@ -151,8 +151,9 @@ for source in config['blacklists']:
     # we are good to go
     zone.add_blank()
     zone.add_comment("=============================================================================")
-    zone.add_comment("Source: {} :: {}".format(source, config['blacklists'][source]['url']))
+    zone.add_comment(" Source: {} :: {}".format(source, config['blacklists'][source]['url']))
     zone.add_comment("=============================================================================")
+    zone.add_blank()
     # process data
     recordcount = 0
     if config['blacklists'][source]['format'] == 'hosts':
@@ -193,8 +194,9 @@ for source in config['blacklists']:
 if 'localblacklist' in config:
     zone.add_blank()
     zone.add_comment("=============================================================================")
-    zone.add_comment("Source: Local blacklist from {}".format(CONFIGFILE))
+    zone.add_comment(" Source: Local blacklist from {}".format(CONFIGFILE))
     zone.add_comment("=============================================================================")
+    zone.add_blank()
     for host in config['localblacklist']:
         zone.add_host(host, CONFIGFILE)
 
