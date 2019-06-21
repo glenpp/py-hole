@@ -35,7 +35,7 @@ import argparse
 
 # read command line arguments with argparse
 parser = argparse.ArgumentParser(description='A Pi-hole inspired DNS firewall for use with bind/named using RPZ')
-parser.add_argument('-c', '--config', type=str, help='Configuration file to use (default: /etc/py-hole-bind9RPZ_config.yaml)', default='/etc/bind/py-hole-bind9RPZ_config.yaml')
+parser.add_argument('-c', '--config', type=str, help='Configuration file to use (default: /etc/bind/py-hole-bind9RPZ_config.yaml)', default='/etc/bind/py-hole-bind9RPZ_config.yaml')
 args = parser.parse_args()
 
 # read config
