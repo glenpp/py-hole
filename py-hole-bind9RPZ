@@ -26,16 +26,22 @@ import re
 import os
 import sys
 import subprocess
+import argparse
 import requests
 import yaml
-import argparse
 
 
 
 
 # read command line arguments with argparse
-parser = argparse.ArgumentParser(description='A Pi-hole inspired DNS firewall for use with bind/named using RPZ')
-parser.add_argument('-c', '--config', type=str, help='Configuration file to use (default: /etc/bind/py-hole-bind9RPZ_config.yaml)', default='/etc/bind/py-hole-bind9RPZ_config.yaml')
+parser = argparse.ArgumentParser(
+    description='A Pi-hole inspired DNS firewall for use with bind/named using RPZ'
+)
+parser.add_argument(
+    '-c', '--config', type=str,
+    help='Configuration file to use (default: /etc/bind/py-hole-bind9RPZ_config.yaml)',
+    default='/etc/bind/py-hole-bind9RPZ_config.yaml'
+)
 args = parser.parse_args()
 
 # read config
@@ -209,4 +215,3 @@ if 'localblacklist' in config:
 zone.write()
 # reload bind zone file
 subprocess.Popen(config['reloadzonecommand'], stdin=None, stdout=None)
-

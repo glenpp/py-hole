@@ -28,9 +28,9 @@ import re
 import os
 import sys
 #import subprocess
+import argparse
 import requests
 import yaml
-import argparse
 
 
 
@@ -38,8 +38,14 @@ import argparse
 
 
 # read command line arguments with argparse
-parser = argparse.ArgumentParser(description='A Pi-hole inspired DNS firewall for use on laptops running NetworkManager with dnsmasq')
-parser.add_argument('-c', '--config', type=str, help='Configuration file to use (default: /etc/py-hole-dnsmasq_config.yaml)', default='/etc/py-hole-dnsmasq_config.yaml')
+parser = argparse.ArgumentParser(
+    description='A Pi-hole inspired DNS firewall for use on laptops running NetworkManager with dnsmasq'
+)
+parser.add_argument(
+    '-c', '--config', type=str,
+    help='Configuration file to use (default: /etc/py-hole-dnsmasq_config.yaml)',
+    default='/etc/py-hole-dnsmasq_config.yaml'
+)
 args = parser.parse_args()
 
 # read config
@@ -241,4 +247,3 @@ if not os.path.isfile(config['dnsmasqblackholeconfig']):
         f.write("addn-hosts={}\n".format(config['hostsfile']))
     os.rename(config['dnsmasqblackholeconfig'] + '.TMP', config['dnsmasqblackholeconfig'])
 # TODO reload dnsmasq (SIGHUP re-reads files, but not config)
-
