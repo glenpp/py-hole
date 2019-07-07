@@ -1,5 +1,5 @@
 # py-hole
-A [Pi-hole](https://github.com/pi-hole/pi-hole) inspired DNS firewall / blacklister for use with bind/named using RPZ (plus Laptops running NetworkManger with dnsmasq)
+A [Pi-hole](https://github.com/pi-hole/pi-hole) inspired DNS firewall / blacklister for use with bind/named using RPZ (plus Laptops running NetworkManager with dnsmasq)
 
 For full details see https://www.pitt-pladdy.com/blog/_20170407-105402_0100_DNS_Firewall_blackhole_malicious_like_Pi-hole_with_bind9/
 
