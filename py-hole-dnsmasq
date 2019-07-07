@@ -30,14 +30,20 @@ import sys
 #import subprocess
 import requests
 import yaml
+import argparse
 
 
 
 
 
+
+# read command line arguments with argparse
+parser = argparse.ArgumentParser(description='A Pi-hole inspired DNS firewall for use on laptops running NetworkManager with dnsmasq')
+parser.add_argument('-c', '--config', type=str, help='Configuration file to use (default: /etc/py-hole-dnsmasq_config.yaml)', default='/etc/py-hole-dnsmasq_config.yaml')
+args = parser.parse_args()
 
 # read config
-CONFIGFILE = '/etc/py-hole-dnsmasq_config.yaml'
+CONFIGFILE = args.config
 config = {
     # base config overridden by CONFIGFILE
     'cachedir': '/var/local/py-hole',
