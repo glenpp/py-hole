@@ -23,13 +23,13 @@ See: https://www.pitt-pladdy.com/blog/_20170407-105402_0100_DNS_Firewall_blackho
 
 # removal: delete files specified in cachedir/cacheprefix, dnsmasqblackholeconfig, output
 
-import yaml
 import time
 import re
 import os
-import requests
 import sys
-import subprocess
+#import subprocess
+import requests
+import yaml
 
 
 
@@ -37,9 +37,9 @@ import subprocess
 
 
 # read config
-configfile = '/etc/py-hole-dnsmasq_config.yaml'
+CONFIGFILE = '/etc/py-hole-dnsmasq_config.yaml'
 config = {
-    # base config overridden by configfile
+    # base config overridden by CONFIGFILE
     'cachedir': '/var/local/py-hole',
     'cacheprefix': 'cache-',
     'cacheexpire': 14400,    # 4 hours
@@ -47,77 +47,137 @@ config = {
     'dnsmasqblackholeconfig': '/etc/dnsmasq.d/local-hosts-blackhole',
     'defaultresponse': '0.0.0.0',
     'exclusions': {
-        'localhost': True,    # we need this always else we get it blocked for 127.0.0.1 keys
-        'www.googleadservices.com': True,    # needed for google shopping
-        'pagead.l.doubleclick.net': True,    # CNAME for www.googleadservices.com needed for google shopping
+        'localhost': True,  # we need this always else we get it blocked for 127.0.0.1 keys
+        'www.googleadservices.com': True,   # needed for google shopping
+        'pagead.l.doubleclick.net': True,   # CNAME for www.googleadservices.com needed for google shopping
     },
     'blacklists': {    # see https://github.com/pi-hole/pi-hole/blob/master/adlists.default
-        'StevenBlack': { 'url':'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts', 'format':'hosts', 'hostskey':'0.0.0.0' },
-        'malwaredomains': { 'url':'https://mirror1.malwaredomains.com/files/justdomains', 'format':'raw' },
-        'cameleon': { 'url':'http://sysctl.org/cameleon/hosts', 'format':'hosts', 'hostskey':'127.0.0.1' },
-        'abuse.ch': { 'url':'https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist', 'format':'raw' },
-        'disconnect.me_tracking': { 'url':'https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt', 'format':'raw' },
-        'disconnect.me_ad': { 'url':'https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt', 'format':'raw' },
-#        'hosts-file.net': { 'url':'https://hosts-file.net/ad_servers.txt', 'format':'hosts0000' },
-#        'Windows 10 telemetry': {
-#        'securemecca.com': { 'url':'http://securemecca.com/Downloads/hosts.txt', 'format':'hosts', 'hostskey':'127.0.0.1' },
+        'StevenBlack': {
+            'url': 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts',
+            'format': 'hosts',
+            'hostskey':'0.0.0.0',
+        },
+        'malwaredomains': {
+            'url': 'https://mirror1.malwaredomains.com/files/justdomains',
+            'format':'raw',
+        },
+        'cameleon': {
+            'url': 'http://sysctl.org/cameleon/hosts',
+            'format': 'hosts',
+            'hostskey': '127.0.0.1',
+        },
+        'abuse.ch': {
+            'url': 'https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist',
+            'format': 'raw',
+        },
+        'disconnect.me_tracking': {
+            'url': 'https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt',
+            'format': 'raw',
+        },
+        'disconnect.me_ad': {
+            'url': 'https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt',
+            'format':'raw',
+        },
+        #'hosts-file.net': {
+        #    'url': 'https://hosts-file.net/ad_servers.txt',
+        #    'format':'hosts0000',
+        #},
+        #'Windows 10 telemetry': {
+        #'securemecca.com': {
+        #    'uarl': 'http://securemecca.com/Downloads/hosts.txt',
+        #    'format': 'hosts',
+        #    'hostskey': '127.0.0.1',
+        #},
     }
 }
 # load yaml file or error
-if os.path.isfile(configfile):
-    with open(configfile, 'r') as f:
+if os.path.isfile(CONFIGFILE):
+    with open(CONFIGFILE, 'r') as f:
         config.update(yaml.load(f))
     # always exclude localhost else we get it blocked for 127.0.0.1 keys
     config['exclusions']['localhost'] = True
 else:
-    sys.exit("Configuration file {} not found\n".format(configfile))
+    sys.exit("Configuration file {} not found\n".format(CONFIGFILE))
 
 
-# our hostsfile
-outputdata = "# created %d\n" % int(time.time())
-seenbefore = {}
-commentstart = '#'    # for hosts / dnsmasq
-def addcomment(comment):
-    global outputdata
-    outputdata += "{}{}\n".format(commentstart, comment)
-def addhost(host):
-    global outputdata
-    host = host.lower().strip()
-    if host in seenbefore:
-        outputdata += "%s seenbefore in %s %s" % (commentstart,seenbefore[host],commentstart)
-    if host in config['exclusions']:
-        outputdata += "{} excluded {}".format(commentstart, commentstart)
-    outputdata += "{} {}\n".format(config['defaultresponse'], host)
-    seenbefore[host] = source
+# build our hostsfile
+class HostsFile(object):
+    """Create a hosts file for blacklisting
+    """
+    def __init__(self, config):
+        """Constructor
+
+        :arg config: dict, configuration data
+        """
+        self.config = config
+        self.outputdata = "# created {:d}\n".format(int(time.time()))
+        self.seenbefore = {}
+    def add_comment(self, comment):
+        """Add a comment line
+        """
+        self.outputdata += "#{}\n".format(comment)
+    def add_blank(self):
+        """Add a blank line
+        """
+        self.outputdata += "\n"
+    def add_host(self, host, source):
+        """Add a blacklisted host to hosts file for blacklisting
+
+        :arg host: str, host pattern to blacklist
+        :arg source: str, identifier for the source of this host pattern
+        """
+        host = host.lower().strip()
+        # exclude hosts we've already seen
+        if host in self.seenbefore:
+            self.outputdata += "# seenbefore in {}\n".format(self.seenbefore[host])
+            return
+        # exclude hosts we've explicitly set as excluded
+        if host in self.config['exclusions']:
+            self.outputdata += "# excluded {}\n".format(host)
+            return
+        # add the line
+        self.outputdata += "{} {}\n".format(config['defaultresponse'], host)
+        self.seenbefore[host] = source
+    def write(self):
+        """Write out the blacklist hosts file
+        """
+        with open(self/config['hostsfile'] + '.TMP', 'wt') as f_hosts:
+            f_hosts.write(self.outputdata)
+        if os.path.isfile(self.config['hostsfile']):
+            os.rename(self.config['hostsfile'], self.config['hostsfile'] + '.old')
+        os.rename(self.config['hostsfile'] + '.TMP', self.config['hostsfile'])
 
 
 # grab from web or cache
-cacheupto = time.time() - config['cacheexpire']
+CACHE_FROM = time.time() - config['cacheexpire']
+hosts = HostsFile(config)
 if not os.path.isdir(config['cachedir']):
     os.makedirs(config['cachedir'])
-httpheaders = { 'User-Agent': 'py-hole hosts blackhole manager' }
+HTTP_HEADERS = {'User-Agent': 'py-hole hosts blackhole manager'}
 for source in config['blacklists']:
-    cachefile = os.path.join ( config['cachedir'], config['cacheprefix'] + source )
+    cachefile = os.path.join(config['cachedir'], config['cacheprefix'] + source)
     # check cache, download if needed
-    if os.path.isfile ( cachefile ) and os.path.getmtime ( cachefile ) >= cacheupto:
+    if os.path.isfile(cachefile) and os.path.getmtime(cachefile) >= CACHE_FROM:
         print("fresh cache {}".format(config['blacklists'][source]['url']))
-        with open ( cachefile, 'rt' ) as f:
-            data = f.read ()
+        with open(cachefile, 'rt') as f:
+            data = f.read()
     else:
         print("retrieve {}".format(config['blacklists'][source]['url']))
-        response = requests.get(config['blacklists'][source]['url'], headers=httpheaders)
+        response = requests.get(config['blacklists'][source]['url'], headers=HTTP_HEADERS)
         if response.status_code != 200:
             sys.exit("ERROR - got http response {:d} for {}".format(response.status_code, config['blacklists'][source]['url']))
         # write cache file
         with open(cachefile+'.TMP', 'wt') as f:
             f.write(response.text)
-        os.rename(cachefile+'.TMP', cachefile)
+        os.rename(cachefile + '.TMP', cachefile)
         # all done
         data = response.text
     # we are good to go
-    outputdata += "\n{}=============================================================================\n".format(commentstart)
-    outputdata += "{} Source: {} :: {}\n".format(commentstart, source, config['blacklists'][source]['url'])
-    outputdata += "{}=============================================================================\n\n".format(commentstart)
+    hosts.add_blank()
+    hosts.add_comment("=============================================================================")
+    hosts.add_comment(" Source: {} :: {}".format(source, config['blacklists'][source]['url']))
+    hosts.add_comment("=============================================================================")
+    hosts.add_blank()
     # process data
     recordcount = 0
     if config['blacklists'][source]['format'] == 'hosts':
@@ -127,28 +187,28 @@ for source in config['blacklists']:
             m = re.match(r'([^#]*?)\s+#(.*)$', line)
             if m:
                 line = m.group(1)
-                addcomment(m.group(2).lstrip())
+                hosts.add_comment(m.group(2).lstrip())
             if line == '':
                 continue
             # process the host line
-            hostlist = re.split ( r'\s+', line )
+            hostlist = re.split(r'\s+', line)
             if hostlist[0] != config['blacklists'][source]['hostskey']:
                 # not a matching key
                 continue
             for host in hostlist[1:]:
                 recordcount += 1
-                addhost ( host )
+                hosts.add_host(host, source)
     elif config['blacklists'][source]['format'] == 'raw':
         # comments start "#"
         for line in data.splitlines():
             if line == '':
                 continue
             if line[0] == '#':
-                addcomment(line[1:])
+                hosts.add_comment(line[1:])
                 continue
             host = line.strip()
             recordcount += 1
-            addhost(host)
+            hosts.add_host(host, source)
     else:
         sys.exit("Unknown format {} for {}".format(config['blacklists'][source]['format'], source))
     if recordcount == 0:
@@ -156,25 +216,23 @@ for source in config['blacklists']:
 
 # if we have a local blacklist, add that also
 if 'localblacklist' in config:
-    outputdata += "\n{}=============================================================================\n".format(commentstart)
-    outputdata += "{} Source: Local blacklist from {}\n".format(commentstart, configfile)
-    outputdata += "{}=============================================================================\n\n".format(commentstart)
+    hosts.add_blank()
+    hosts.add_comment("=============================================================================")
+    hosts.add_comment(" Source: Local blacklist from {}".format(CONFIGFILE))
+    hosts.add_comment("=============================================================================")
+    hosts.add_blank()
     for host in config['localblacklist']:
-        addhost(host)
+        hosts.add_host(host, CONFIGFILE)
 
 
 # write the config['hostsfile'] file
-with open(config['hostsfile']+'.TMP', 'wt') as f:
-    f.write(outputdata)
-if os.path.isfile(config['hostsfile']):
-    os.rename(config['hostsfile'], config['hostsfile']+'.old')
-os.rename(config['hostsfile']+'.TMP', config['hostsfile'])
+hosts.write()
 
 
 # ensure we have a dnsmasq config file - we assume if it's there it's sufficient TODO maybe we should check
 if not os.path.isfile(config['dnsmasqblackholeconfig']):
-    with open(config['dnsmasqblackholeconfig']+'.TMP', 'wt') as f:
+    with open(config['dnsmasqblackholeconfig'] + '.TMP', 'wt') as f:
         f.write("addn-hosts={}\n".format(config['hostsfile']))
-    os.rename(config['dnsmasqblackholeconfig']+'.TMP', config['dnsmasqblackholeconfig'])
+    os.rename(config['dnsmasqblackholeconfig'] + '.TMP', config['dnsmasqblackholeconfig'])
 # TODO reload dnsmasq (SIGHUP re-reads files, but not config)
 
