@@ -104,13 +104,63 @@ class ZoneFile(object):
         """Add a blank line
         """
         self.outputdata += "\n"
+    def _sanity_check_host(self, host, source):
+        """check a host is not harmful (may still be invalid)
+
+        :arg host: str, host pattern to blacklist
+        :arg source: str, identifier for the source of this host pattern
+        """
+        if len(host) > 512: # limit is actually 255 but stopping harm not mistakes
+            raise ValueError(
+                "Sanity check fail - host too long in {}: {}".format(source, len(host))
+            )
+        if not re.match(r'(?:\*\.)?[\w\-\.]{3,255}$', host): # allows invalid but stopping harm not mistakes
+            raise ValueError(
+                "Sanity check fail - host pattern fail in {}: {}".format(source, host)
+            )
+    def add_rpz(self, rpz, source):
+        """Add a existing rpz for blacklisted host to bind zone file
+
+        :arg rpz: str, rpz line blacklisted
+        :arg source: str, identifier for the source of this host pattern
+        """
+        # sanity check
+        if len(rpz) > 1024:
+            raise ValueError(
+                "Sanity check fail - rpz too long in {}: {}".format(source, len(rpz))
+            )
+        # split host and sanity check
+        host, response = rpz.strip().split(' ', 1)
+        host = host.lower()
+        self._sanity_check_host(host, source)
+        # sanity check remaining rpz response
+        if not re.match(r'\s*CNAME\s+\.\s*(?:;.{0,256})?$', response):
+            raise ValueError(
+                "Sanity check fail - rpz not expected in {}: {}".format(source, rpz)
+            )
+        # exclude hosts we've already seen
+        if host in self.seenbefore:
+            self.outputdata += "; seenbefore in {} {}\n".format(self.seenbefore[host], host)
+            return
+        # exclude hosts we've explicitly set as excluded
+        if host in self.config['exclusions']:
+            self.outputdata += "; excluded {}\n".format(host)
+            return
+        # try add the line
+        outputline = rpz + '\n'
+        if len(host) >= 255:  # seems to be a limit from https://www.ietf.org/rfc/rfc1035.txt
+            self.outputdata += ';too-long '
+        self.outputdata += outputline
+        self.seenbefore[host] = source
     def add_host(self, host, source):
         """Add a blacklisted host to bind zone file
 
         :arg host: str, host pattern to blacklist
         :arg source: str, identifier for the source of this host pattern
         """
+        # tidy host and sanity check
         host = host.lower().strip()
+        self._sanity_check_host(host, source)
         # exclude hosts we've already seen
         if host in self.seenbefore:
             self.outputdata += "; seenbefore in {} {}\n".format(self.seenbefore[host], host)
@@ -121,7 +171,7 @@ class ZoneFile(object):
             return
         # try add the line
         outputline = "{} {}\n".format(host, config['defaultresponse'])
-        if len(outputline) >= 255:  # seems to be a limit from https://www.ietf.org/rfc/rfc1035.txt
+        if len(host) >= 255:  # seems to be a limit from https://www.ietf.org/rfc/rfc1035.txt
             self.outputdata += ';too-long '
         self.outputdata += outputline
         self.seenbefore[host] = source
@@ -189,12 +239,29 @@ for source in config['blacklists']:
         for line in data.splitlines():
             if line == '':
                 continue
-            if line[0] == '#':
+            if line.startswith('#'):
                 zone.add_comment(line[1:])
                 continue
             host = line.strip()
             recordcount += 1
             zone.add_host(host, source)
+    elif config['blacklists'][source]['format'] == 'rpz':
+        # comments start ";", stirctly not starting at the beginning of line
+        for line in data.splitlines():
+            if line == '':
+                continue
+            if line.startswith(';'):
+                zone.add_comment(line[1:])
+                continue
+            if line.startswith('$TTL '):
+                continue
+            if re.match(r'@?\s+SOA\s', line):
+                continue
+            if re.match(r'@?\s+NS\s', line):
+                continue
+            rpz= line.strip()
+            recordcount += 1
+            zone.add_rpz(rpz, source)
     else:
         sys.exit("Unknown format {} for {}".format(config['blacklists'][source]['format'], source))
     if recordcount == 0:
