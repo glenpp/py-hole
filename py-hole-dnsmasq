@@ -35,8 +35,6 @@ import yaml
 
 
 
-
-
 # read command line arguments with argparse
 parser = argparse.ArgumentParser(
     description='A Pi-hole inspired DNS firewall for use on laptops running NetworkManager with dnsmasq'
@@ -67,7 +65,7 @@ config = {
         'StevenBlack': {
             'url': 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts',
             'format': 'hosts',
-            'hostskey':'0.0.0.0',
+            'hostskey': '0.0.0.0',
         },
         'malwaredomains': {
             'url': 'https://mirror1.malwaredomains.com/files/justdomains',
@@ -82,29 +80,11 @@ config = {
             'url': 'https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist',
             'format': 'raw',
         },
-        'disconnect.me_tracking': {
-            'url': 'https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt',
-            'format': 'raw',
-        },
-        'disconnect.me_ad': {
-            'url': 'https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt',
-            'format':'raw',
-        },
-        #'hosts-file.net': {
-        #    'url': 'https://hosts-file.net/ad_servers.txt',
-        #    'format':'hosts0000',
-        #},
-        #'Windows 10 telemetry': {
-        #'securemecca.com': {
-        #    'uarl': 'http://securemecca.com/Downloads/hosts.txt',
-        #    'format': 'hosts',
-        #    'hostskey': '127.0.0.1',
-        #},
     }
 }
 # load yaml file or error
 if os.path.isfile(CONFIGFILE):
-    with open(CONFIGFILE, 'r') as f:
+    with open(CONFIGFILE, 'rt') as f:
         config.update(yaml.load(f))
     # always exclude localhost else we get it blocked for 127.0.0.1 keys
     config['exclusions']['localhost'] = True
@@ -132,13 +112,59 @@ class HostsFile(object):
         """Add a blank line
         """
         self.outputdata += "\n"
+    def _sanity_check_host(self, host, source):
+        """check a host is not harmful (may still be invalid)
+
+        :arg host: str, host pattern to blacklist
+        :arg source: str, identifier for the source of this host pattern
+        """
+        if len(host) > 512: # limit is actually 255 but stopping harm not mistakes
+            raise ValueError(
+                "Sanity check fail - host too long in {}: {}".format(source, len(host))
+            )
+        if not re.match(r'(?:\*\.)?[\w\-\.]{3,255}$', host): # allows invalid but stopping harm not mistakes
+            raise ValueError(
+                "Sanity check fail - host pattern fail in {}: {}".format(source, host)
+            )
+    def add_rpz(self, rpz, source):
+        """Add a existing rpz for blacklisted host to bind zone file
+
+        :arg rpz: str, rpz line blacklisted
+        :arg source: str, identifier for the source of this host pattern
+        """
+        # sanity check
+        if len(rpz) > 1024:
+            raise ValueError(
+                "Sanity check fail - rpz too long in {}: {}".format(source, len(rpz))
+            )
+        # split host and sanity check
+        host, response = rpz.strip().split(' ', 1)
+        host = host.lower()
+        self._sanity_check_host(host, source)
+        # sanity check remaining rpz response
+        if not re.match(r'\s*CNAME\s+\.\s*(?:;.{0,256})?$', response):
+            raise ValueError(
+                "Sanity check fail - rpz not expected in {}: {}".format(source, rpz)
+            )
+        # exclude hosts we've already seen
+        if host in self.seenbefore:
+            self.outputdata += "; seenbefore in {} {}\n".format(self.seenbefore[host], host)
+            return
+        # exclude hosts we've explicitly set as excluded
+        if host in self.config['exclusions']:
+            self.outputdata += "; excluded {}\n".format(host)
+            return
+        # try add the host (not the rpz line)
+        self.add_host(host, source)
     def add_host(self, host, source):
         """Add a blacklisted host to hosts file for blacklisting
 
         :arg host: str, host pattern to blacklist
         :arg source: str, identifier for the source of this host pattern
         """
+        # tidy host and sanity check
         host = host.lower().strip()
+        self._sanity_check_host(host, source)
         # exclude hosts we've already seen
         if host in self.seenbefore:
             self.outputdata += "# seenbefore in {}\n".format(self.seenbefore[host])
@@ -175,7 +201,10 @@ for source in config['blacklists']:
             data = f.read()
     else:
         print("retrieve {}".format(config['blacklists'][source]['url']))
-        response = requests.get(config['blacklists'][source]['url'], headers=HTTP_HEADERS)
+        try:
+            response = requests.get(config['blacklists'][source]['url'], headers=HTTP_HEADERS)
+        except requests.exceptions.ConnectionError as exc:
+            sys.exit("ERROR - ConnectionError: {}".format(exc.args))
         if response.status_code != 200:
             sys.exit("ERROR - got http response {:d} for {}".format(response.status_code, config['blacklists'][source]['url']))
         # write cache file
