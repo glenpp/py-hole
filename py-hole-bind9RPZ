@@ -199,7 +199,10 @@ for source in config['blacklists']:
             data = f.read()
     else:
         print("retrieve {}".format(config['blacklists'][source]['url']))
-        response = requests.get(config['blacklists'][source]['url'], headers=HTTP_HEADERS)
+        try:
+            response = requests.get(config['blacklists'][source]['url'], headers=HTTP_HEADERS)
+        except requests.exceptions.ConnectionError as exc:
+            sys.exit("ERROR - ConnectionError: {}".format(exc.args))
         if response.status_code != 200:
             sys.exit("ERROR - got http response {:d} for {}".format(response.status_code, config['blacklists'][source]['url']))
         # write cache file
