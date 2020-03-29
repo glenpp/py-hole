@@ -11,10 +11,10 @@ rpztemplate: |
   ; name server is never accessed but out-of-zone
   ;         NS  nonexistant.nodomain.none
     NS  dnsserver.example.com.
-  
+
   ;example.net CNAME .
   ;*.example.net CNAME .
-  
+
   ; Automatic rules start
   ;
 # end of template
@@ -35,7 +35,6 @@ blacklists:
     hostskey: 0.0.0.0
   malwaredomains: { url: 'https://mirror1.malwaredomains.com/files/justdomains', format: raw }
   cameleon: { 'url':'http://sysctl.org/cameleon/hosts', 'format':'hosts', 'hostskey':'127.0.0.1' }
-  abuse.ch: { 'url':'https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist', 'format':'raw' }
   disconnect.me_tracking: { 'url':'https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt', 'format':'raw' }
   disconnect.me_ad: { 'url':'https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt', 'format':'raw' }
 #  hosts-file.net: { 'url':'https://hosts-file.net/ad_servers.txt', 'format':'hosts0000' }
@@ -62,4 +61,3 @@ exclusions:
 # we can also add our own local backlist
 #localblacklist:
 #  - evilhost.example.com  # going there does evil stuff
-
