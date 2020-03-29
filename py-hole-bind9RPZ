@@ -42,13 +42,18 @@ parser.add_argument(
     help='Configuration file to use (default: /etc/bind/py-hole-bind9RPZ_config.yaml)',
     default='/etc/bind/py-hole-bind9RPZ_config.yaml'
 )
+parser.add_argument(
+    '-o','--output_dir', type =str,
+    help='Output dir if zones files (default: /var/local/bindRPZ)',
+    default='/var/local/bindRPZ'
+)
 args = parser.parse_args()
 
 # read config
 CONFIGFILE = args.config
 config = {
     # base config overridden by CONFIGFILE
-    'cachedir': '/var/local/bindRPZ',
+    'cachedir': args.output_dir,
     'cacheprefix': 'bindRPZcache-',
     'cacheexpire': 14400,    # 4 hours
     'defaultresponse': 'CNAME .',
