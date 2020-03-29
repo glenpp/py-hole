@@ -135,7 +135,11 @@ class ZoneFile(object):
         """
         with open(self.config['rpzfile'] + '.TMP', 'wt') as f_rpz:
             f_rpz.write(self.outputdata)
-        os.rename(self.config['rpzfile'], self.config['rpzfile'] + '.old')
+
+        try:
+            os.rename(self.config['rpzfile'], self.config['rpzfile'] + '.old')
+        except FileNotFoundError:
+            print("Can't find .old file")
         os.rename(self.config['rpzfile'] + '.TMP', self.config['rpzfile'])
 
 
@@ -219,4 +223,7 @@ if 'localblacklist' in config:
 # write the config['rpzfile'] file
 zone.write()
 # reload bind zone file
-subprocess.Popen(config['reloadzonecommand'], stdin=None, stdout=None)
+try:
+    subprocess.Popen(config['reloadzonecommand'], stdin=None, stdout=None)
+except FileNotFoundError:
+    print("Coudln't find 'rndc'. Local run ?")
