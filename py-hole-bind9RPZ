@@ -64,7 +64,7 @@ config = {
 # load yaml file or error
 if os.path.isfile(CONFIGFILE):
     with open(CONFIGFILE, 'rt') as f:
-        config.update(yaml.load(f))
+        config.update(yaml.load(f, Loader=yaml.FullLoader))
     # always exclude localhost else we get it blocked for 127.0.0.1 keys
     config['exclusions']['localhost'] = True
 else:
