@@ -68,7 +68,7 @@ class UnitTestPylint(unittest.TestCase):
             self.assertEqual(result.linter.stats['error'], 0, "pylint: error found")
         self.assertGreaterEqual(
             result.linter.stats['global_note'], CODEQUALITY,
-            "pylint: code quality of minimum {} required, go t{}".format(
+            "pylint: code quality of minimum {} required, got {}".format(
                 CODEQUALITY,
                 result.linter.stats['global_note']
             )
