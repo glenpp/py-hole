@@ -27,61 +27,55 @@ import os
 import sys
 import subprocess
 import argparse
-import requests
+import json
+import pwd
+import grp
+import glob
+import logging
+import logging.config
+import email.utils  # for date parsing
 import yaml
+import requests
 
 
+USER_AGENT = 'py-hole RPZ blackhole manager'
+HOST_SANITIY_RE = re.compile(r'[\w\-\.]{3,255}')
+HOST_SANITIY_WILDCARD_RE = re.compile(r'(?:\*\.)?[\w\-\.]{3,255}')
+#SANE_LINE_MAX_DEFAULT = 256
+SANE_LINE_RE_DEFAULT = r'[\w\-\+\*\.,:;# \t\(\)\[\]@&%/\'\\`"<>=!\?~\|\$]*'
 
-
-# read command line arguments with argparse
-parser = argparse.ArgumentParser(
-    description='A Pi-hole inspired DNS firewall for use with bind/named using RPZ'
-)
-parser.add_argument(
-    '-c', '--config', type=str,
-    help='Configuration file to use (default: /etc/bind/py-hole-bind9RPZ_config.yaml)',
-    default='/etc/bind/py-hole-bind9RPZ_config.yaml'
-)
-args = parser.parse_args()
-
-# read config
-CONFIGFILE = args.config
-config = {
-    # base config overridden by CONFIGFILE
+CONFIG_DEFAULT = {
+    # base config overridden by config_file
     'cachedir': '/var/local/bindRPZ',
     'cacheprefix': 'bindRPZcache-',
-    'cacheexpire': 14400,    # 4 hours
+    'cache_sane_age': 1209600,  # 14 days after which this will fail
     'defaultresponse': 'CNAME .',
-    'exclusions': {},
     'blacklists': {
         'StevenBlack': {
             'url': 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts',
             'format': 'hosts',
             'hostskey': '0.0.0.0',
+            # sanity checks
+            'sane_size_min': 1048576,
+            'sane_size_max': 2097152,
+            # 'sane_line_max': 256,
+            # 'sane_line_re': r'',
+            # 'cache_sane_age': 7776000   # 90 days
         },
     },
+    'exclusions': {},
 }
-# load yaml file or error
-if os.path.isfile(CONFIGFILE):
-    with open(CONFIGFILE, 'rt') as f:
-        config.update(yaml.load(f))
-    # always exclude localhost else we get it blocked for 127.0.0.1 keys
-    config['exclusions']['localhost'] = True
-else:
-    sys.exit("Configuration file {} not found\n".format(CONFIGFILE))
-# at minimum we need to end up with an rpzfile
-if 'rpzfile' not in config:
-    sys.exit("Setting for 'rpzfile' not found in configuration {}\n".format(CONFIGFILE))
-# and a template with a serial number
-if 'rpztemplate' not in config or not re.search(r'<SERIAL>', config['rpztemplate']):
-    sys.exit("Setting for 'rpztemplate' including a serial number marker '<SERIAL>' not found in configuration {}\n".format(CONFIGFILE))
-# and a reloadzonecommand:
-if 'reloadzonecommand' not in config:
-    sys.exit("Setting for 'reloadzonecommand' not found in configuration {}\n".format(CONFIGFILE))
+
+
+
+class FatalErrorStop(Exception):
+    """Custom immediate log and exit condition"""
+    pass
+
 
 
 # build our zone
-class ZoneFile(object):
+class ZoneFile:
     """Render a bind RPZ zone file from a template
     """
     def __init__(self, config):
@@ -90,198 +84,695 @@ class ZoneFile(object):
         :arg config: dict, configuration data
         """
         self.config = config
-        self.outputdata = re.sub(
+        outputdata = re.sub(
             r'<SERIAL>',
             '{:010d}'.format(int(time.time())),
             self.config['rpztemplate']
         )
+        self.output_lines = outputdata.splitlines(keepends=True)
         self.seenbefore = {}
+
     def add_comment(self, comment):
         """Add a comment line
         """
-        self.outputdata += ";{}\n".format(comment)
+        self.output_lines.append(";{}\n".format(comment))
+
     def add_blank(self):
         """Add a blank line
         """
-        self.outputdata += "\n"
-    def _sanity_check_host(self, host, source):
-        """check a host is not harmful (may still be invalid)
+        self.output_lines.append("\n")
 
-        :arg host: str, host pattern to blacklist
-        :arg source: str, identifier for the source of this host pattern
-        """
-        if len(host) > 512: # limit is actually 255 but stopping harm not mistakes
-            raise ValueError(
-                "Sanity check fail - host too long in {}: {}".format(source, len(host))
-            )
-        if not re.match(r'(?:\*\.)?[\w\-\.]{3,255}$', host): # allows invalid but stopping harm not mistakes
-            raise ValueError(
-                "Sanity check fail - host pattern fail in {}: {}".format(source, host)
-            )
-    def add_rpz(self, rpz, source):
-        """Add a existing rpz for blacklisted host to bind zone file
-
-        :arg rpz: str, rpz line blacklisted
-        :arg source: str, identifier for the source of this host pattern
-        """
-        # sanity check
-        if len(rpz) > 1024:
-            raise ValueError(
-                "Sanity check fail - rpz too long in {}: {}".format(source, len(rpz))
-            )
-        # split host and sanity check
-        host, response = rpz.strip().split(' ', 1)
-        host = host.lower()
-        self._sanity_check_host(host, source)
-        # sanity check remaining rpz response
-        if not re.match(r'\s*CNAME\s+\.\s*(?:;.{0,256})?$', response):
-            raise ValueError(
-                "Sanity check fail - rpz not expected in {}: {}".format(source, rpz)
-            )
-        # exclude hosts we've already seen
-        if host in self.seenbefore:
-            self.outputdata += "; seenbefore in {} {}\n".format(self.seenbefore[host], host)
-            return
-        # exclude hosts we've explicitly set as excluded
-        if host in self.config['exclusions']:
-            self.outputdata += "; excluded {}\n".format(host)
-            return
-        # try add the line
-        outputline = rpz + '\n'
-        if len(host) >= 255:  # seems to be a limit from https://www.ietf.org/rfc/rfc1035.txt
-            self.outputdata += ';too-long '
-        self.outputdata += outputline
-        self.seenbefore[host] = source
-    def add_host(self, host, source):
+    def add_host(self, host, source, allow_wildcard=False):
         """Add a blacklisted host to bind zone file
 
         :arg host: str, host pattern to blacklist
         :arg source: str, identifier for the source of this host pattern
+        :returns: tuple, consisting of:
+            added: bool, True if the record was adeed, False if not (dup, bad record, etc.)
+            reason: str|None, why the record was not added
         """
         # tidy host and sanity check
         host = host.lower().strip()
-        self._sanity_check_host(host, source)
+        sanity_re = HOST_SANITIY_WILDCARD_RE if allow_wildcard else HOST_SANITIY_RE
+        if not sanity_re.fullmatch(host):
+            if allow_wildcard:
+                raise FatalErrorStop("bad wildcard host doesn't match format: {}".format(host))
+            else:
+                raise FatalErrorStop("bad host doesn't match format: {}".format(host))
         # exclude hosts we've already seen
         if host in self.seenbefore:
-            self.outputdata += "; seenbefore in {} {}\n".format(self.seenbefore[host], host)
-            return
+            self.output_lines.append("; seenbefore in {} {}\n".format(self.seenbefore[host], host))
+            return False, "seenbefore"
         # exclude hosts we've explicitly set as excluded
         if host in self.config['exclusions']:
-            self.outputdata += "; excluded {}\n".format(host)
-            return
+            self.output_lines.append("; excluded {}\n".format(host))
+            return False, "excluded"
         # try add the line
-        outputline = "{} {}\n".format(host, config['defaultresponse'])
+        outputline = "{} {}\n".format(host, self.config['defaultresponse'])
         if len(host) >= 255:  # seems to be a limit from https://www.ietf.org/rfc/rfc1035.txt
-            self.outputdata += ';too-long '
-        self.outputdata += outputline
+            self.output_lines.append(';too-long in {} {}\n'.format(self.seenbefore[host], host))
+            return False, "too-long"
+        self.output_lines.append(outputline)
         self.seenbefore[host] = source
+        return True, None
+
     def write(self):
         """Write out the bind RPZ sone file
         """
         with open(self.config['rpzfile'] + '.TMP', 'wt') as f_rpz:
-            f_rpz.write(self.outputdata)
+            for line in self.output_lines:
+                f_rpz.write(line)
         os.rename(self.config['rpzfile'], self.config['rpzfile'] + '.old')
         os.rename(self.config['rpzfile'] + '.TMP', self.config['rpzfile'])
 
 
-# grab from web or cache
-CACHE_FROM = time.time() - config['cacheexpire']
-zone = ZoneFile(config)
-if not os.path.isdir(config['cachedir']):
-    os.makedirs(config['cachedir'])
-HTTP_HEADERS = {'User-Agent': 'py-hole RPZ blackhole manager'}
-for source in config['blacklists']:
-    cachefile = os.path.join(config['cachedir'], config['cacheprefix'] + source)
-    # check cache, download if needed
-    if os.path.isfile(cachefile) and os.path.getmtime(cachefile) >= CACHE_FROM:
-        print("fresh cache {}".format(config['blacklists'][source]['url']))
-        with open(cachefile, 'rt') as f:
-            data = f.read()
-    else:
-        print("retrieve {}".format(config['blacklists'][source]['url']))
+class FetchCache:
+    """Safe fetching (HTTP GET) with caching
+    """
+    def __init__(self, cache_dir, **kwargs):
+        """Setup cachhe & http collector
+
+        :kw user_agent: str, optional custom user agent string
+        :kw fetch_user: str, optional custom user to perform http fetch as (defualt nobody)
+        :kw fetch_group: str, optional custom group to perform http fetch as (defualt nogroup)
+        :kw cache_time_min: int, optional mimimum seconds to cache a file for (default 1h)
+        :kw cache_time_default: int, optional default seconds to cache a file for (default max of 12h or cache_time_min * 12)
+        :kw cache_time_max: int, optional maximum seconds to cache a file for (default max of 7d or cache_time_default * 14)
+        :kw cache_file_prefix: str, optional prefix to add to cache files, default ''
+        :kw sane_line_max_default: int, optional default maximum line length (default 256)
+        :kw sane_line_re_default: str, optional line sanity check regex (default quite permissive) TODO
+        """
+        self.cache_dir = cache_dir
+        self.run_time = time.time()
+        # clear out any None values which should be defualts
+        kwargs_clean = {key: value for key, value in kwargs.items() if value is not None}
+        self.user_agent = kwargs_clean.get('user_agent', 'Python HTTP Fetch & Cache')
+        self.fetch_user = kwargs_clean.get('fetch_user', 'nobody')
+        self.fetch_group = kwargs_clean.get('fetch_group', 'nogroup')
+        self.fetch_uid = pwd.getpwnam(self.fetch_user).pw_uid
+        self.fetch_gid = grp.getgrnam(self.fetch_group).gr_gid
+        self.cache_time_min = kwargs_clean.get('cache_time_min', 3600)
+        self.cache_time_default = kwargs_clean.get('cache_time_default', max(43200, self.cache_time_min * 12))
+        if self.cache_time_default <= self.cache_time_min:
+            raise ValueError("Invalid cache_time_default - should be more than self.cache_time_min")
+        self.cache_time_max = kwargs_clean.get('cache_time_max', max(604800, self.cache_time_default * 14))
+        if self.cache_time_max <= self.cache_time_default:
+            raise ValueError("Invalid cache_time_max - should be more than self.cache_time_default")
+        self.cache_file_prefix = kwargs_clean.get('cache_file_prefix', '')
+        self.sane_line_max_default = kwargs_clean.get('sane_line_max_default', 256)
+        self.sane_line_re_default = kwargs_clean.get('sane_line_re_default',
+                                                     r'[\w\-\+\*\.,:;# \t\(\)\[\]@&/\'"<>]*')
+        self.cache_fiels_expect = []
+        # load current status
+        self.cache_status_path = os.path.join(self.cache_dir, self.cache_file_prefix + 'cache_status.yaml')
+        self.cache_status = {}
         try:
-            response = requests.get(config['blacklists'][source]['url'], headers=HTTP_HEADERS)
-        except requests.exceptions.ConnectionError as exc:
-            sys.exit("ERROR - ConnectionError: {}".format(exc.args))
-        if response.status_code != 200:
-            sys.exit("ERROR - got http response {:d} for {}".format(response.status_code, config['blacklists'][source]['url']))
-        # write cache file
-        with open(cachefile+'.TMP', 'wt') as f:
-            f.write(response.text)
-        os.rename(cachefile + '.TMP', cachefile)
-        # all done
-        data = response.text
-    # we are good to go
-    zone.add_blank()
-    zone.add_comment("=============================================================================")
-    zone.add_comment(" Source: {} :: {}".format(source, config['blacklists'][source]['url']))
-    zone.add_comment("=============================================================================")
-    zone.add_blank()
-    # process data
-    recordcount = 0
-    if config['blacklists'][source]['format'] == 'hosts':
-        # comments start "#", we only take lines matching "hostskey"
-        for line in data.splitlines():
-            # separate comments that could be whole line or after a record
-            m = re.match(r'([^#]*?)\s+#(.*)$', line)
-            if m:
-                line = m.group(1)
-                zone.add_comment(m.group(2).lstrip())
-            if line == '':
-                continue
-            # process the host line
-            hostlist = re.split(r'\s+', line)
-            if hostlist[0] != config['blacklists'][source]['hostskey']:
-                # not a matching key
-                continue
-            for host in hostlist[1:]:
+            with open(self.cache_status_path, 'rt') as f_status:
+                self.cache_status = yaml.safe_load(f_status)
+        except FileNotFoundError:
+            pass
+
+
+    def save_status(self):
+        """Save the cache status into file
+        """
+        with open(self.cache_status_path + '.TMP', 'wt') as f_status:
+            yaml.safe_dump(self.cache_status, f_status)
+        os.rename(self.cache_status_path + '.TMP', self.cache_status_path)
+
+
+    def path(self, url):
+        """Calculate cache file path from url
+        """
+        filename = url
+        filename = re.sub(r'^https?://', '', filename)
+        filename = re.sub(r'[^\w\.\-]', '_', filename)
+        path = os.path.join(self.cache_dir, self.cache_file_prefix + filename)
+        self.cache_fiels_expect.append(path)
+        return path
+
+
+    def stray_cache_files(self):
+        """Return a list of files in the cache that we haven't touched (leftovers/strays?)
+        """
+        stray_files = [
+            path for path in glob.glob(os.path.join(self.cache_dir, self.cache_file_prefix + '*'))
+            if path not in self.cache_fiels_expect and  path != self.cache_status_path
+        ]
+        return stray_files
+
+
+    def _safe_fetch_child(self, url, config, head_only):
+        """Safely (with minimum priveledge) fetch the url
+
+        :param url: str, url to fetch, see safe_fetch()
+        :param config: dict, configuration specific to this fetch, see safe_fetch()
+        :param head_only: bool, if we should perform HEAD rather than GET, see safe_fetch()
+
+        Internally, exit status used are:
+            0: success
+            1: connection error
+            2: unhandlex http exception
+            3: sanity checks failed
+        """
+        # child - this safely fetches the data
+        # we must do everything in an exception catch to log problems
+        try:
+            # remove log stream handlers - they break output
+            for handler in logging.getLogger().handlers:
+                if not isinstance(handler, logging.StreamHandler):
+                    continue
+                # remove this
+                logging.getLogger().removeHandler(handler)
+                break
+            # drop priveledge
+            try:
+                # these might not wrok if we don't have permission
+                os.setgroups([])
+                os.setgid(self.fetch_gid)
+                os.setuid(self.fetch_uid)
+            except PermissionError as exc:
+                logging.warning("Can't drop privelege: %s", exc)
+            os.umask(0o077)
+            # fetch url
+            try:
+                if head_only:
+                    response = requests.head(url, headers={'User-Agent': self.user_agent})
+                else:
+                    response = requests.get(url, headers={'User-Agent': self.user_agent})
+            except requests.exceptions.ConnectionError as exc:
+                logging.error("ConnectionError fetching %s :: %s", url, str(exc.args))
+                sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
+                sys.stdout.write('\n')
+                sys.exit(1)
+            except:
+                logging.exception("Exception fetching %s", url)
+                sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
+                sys.stdout.write('\n')
+                sys.exit(2)
+            # format output to json metadata + body
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        'headers': {key.lower(): value for key, value in response.headers.items()},
+                        'status_code': response.status_code,
+                    }
+                )
+            )
+            sys.stdout.write('\n')
+            # sanity checks
+            header_length = None
+            if 'Content-Length' in response.headers:
+                header_length = int(response.headers['Content-Length'])
+                if header_length > config['sane_size_max']:
+                    logging.error("Content-Length header > sane_size_max: %s > %d", response.headers['Content-Length'], config['sane_size_max'])
+                    sys.exit(3)
+            if not head_only:
+                # seems sometimes we get zero lenght for HEAD so min must be checked here
+                if header_length is not None and not header_length:
+                    logging.error("Zero Content-Length header: %s", response.headers['Content-Length'])
+                    sys.exit(3)
+                # sanity check data
+                data_length = len(response.text)
+                if not data_length:
+                    logging.error("Zero length data recieved")
+                    sys.exit(3)
+                # sanity check Content-Length != response.text
+                if header_length is not None and data_length < header_length:
+                    logging.error("Content-Length header < data recieved: %d < %d", data_length, header_length)
+                    sys.exit(3)
+                # sanity check sizes
+                if data_length > config['sane_size_max']:
+                    logging.error("Data length > sane_size_max: %d > %d", data_length, config['sane_size_max'])
+                    sys.exit(3)
+                if data_length < config['sane_size_min']:
+                    logging.error("Data length < sane_size_min: %d < %d", data_length, config['sane_size_min'])
+                    sys.exit(3)
+            # apply sanity checks on response and output lines
+            line_re = re.compile(config.get('sane_line_re', self.sane_line_re_default))
+            line_max = config.get('sane_line_max', self.sane_line_max_default)
+            for i, line in enumerate(response.text.splitlines(True)):
+                if len(line) > line_max:
+                    logging.error("Line %d length > sane_line_max: %d > %d", i + 1, len(line), line_max)
+                    sys.exit(3)
+                # take line before comment when sane_line_comment_ignore is enabled
+                check_line = line.rstrip('\r\n')
+                if 'sane_line_comment_ignore' in config:
+                    check_line = check_line.split(config['sane_line_comment_ignore'])[0]
+                if not line_re.fullmatch(check_line):
+                    logging.error("Line %d no match for regex: %s", i + 1, line)
+                    sys.exit(3)
+                sys.stdout.write(line.encode('unicode_escape').decode() + '\n')
+        except SystemExit:
+            raise
+        except:
+            logging.exception("fail:")
+            raise
+        sys.exit(0)
+
+
+    def safe_fetch(self, url, config, head_only=False):
+        """Safely (with minimum priveledge) fetch the url using _fetch_safe_child()
+
+
+        :param url: str, URL to download if needed
+        :parm config: dict, config relating to this url/fetch, with keys:
+            sane_size_max: int, maximum reported size to accept
+            sane_size_min: int, minimum reported size to accept
+            sane_line_max': int, optional length to check lines against( default self.sane_line_max_default)
+            sane_line_re: str, optional regex to check lines against (default self.sane_line_re_default)
+            sane_line_comment_ignore: str, optional comment start character(s) after which will be ignored for sane_line_re checks
+        :param head_only: bool, if we should perform HEAD rather than GET
+        :returns: tuple, of:
+            request_success: bool, if the http request was made
+            metadata: dict, data about response (http code, headers, etc.)
+            data: str, returned body
+        """
+        if 'sane_size_min' not in config:
+            raise KeyError("Missing config 'sane_size_min' for: {}".format(url))
+        if 'sane_size_max' not in config:
+            raise KeyError("Missing config 'sane_size_max' for: {}".format(url))
+        # fork and handl parent/child communication
+        pid, child_fd = os.forkpty()
+        if pid:
+            # parent
+            # read data coming back
+            data = b''
+            try:
+                while True:
+                    data += os.read(child_fd, 1024)
+            except OSError:
+                pass
+            # reap child
+            _, status = os.waitpid(pid, 0)
+            exit_status = status >> 8 & 0xff
+            if exit_status == 1:
+                logging.error("Fetch connection failed")
+            elif exit_status == 2:
+                logging.error("Fetch http exception")
+            elif exit_status == 3:
+                logging.error("Fetch sanity check failed")
+            elif exit_status != 0:
+                logging.critical("Fetch failed with unknown exit_status | status: %d | %d", exit_status, status)
+            # decode data
+            metadata = None
+            lines = ''
+            for line in data.decode('utf-8').splitlines():
+                if metadata is None:
+                    metadata = json.loads(line)
+                    continue
+                lines += line.encode().decode('unicode_escape')
+            request_success = status == 0
+            # done
+            return request_success, metadata, lines
+        else:
+            # child - this safely fetches the data
+            self._safe_fetch_child(url, config, head_only)
+
+
+    def cached_fetch(self, url, config):
+        """Fetch a URL with caching
+
+        :param url: str, URL to download if needed
+        :param config: dict, configuration specific to this fetch, see safe_fetch() and for caching:
+            cache_time_max: int, optional maximum time to cache, overrides self.cache_time_max
+            cache_time_min: int, optional minimum time to cache, overrides self.cache_time_min
+        :returns: str, path of cached file that has been downloaded
+        """
+        cache_path = self.path(url)
+        cache_info = self.cache_status.get(url, {})
+        if not os.path.isfile(cache_path):
+            # file is gone so force no status
+            cache_info = {}
+        # check expiry
+        try:
+            file_time = os.path.getmtime(cache_path)
+        except FileNotFoundError:
+            file_time = 0
+        fetched_time = cache_info.get('fetched', file_time)
+        fetched_age = self.run_time - fetched_time
+        if fetched_age <= config.get('cache_time_min', self.cache_time_min):
+            # force minimum caching time
+            logging.debug("no expire due to minimum cache time")
+            return cache_path
+        expires = False
+        if 'expires' in cache_info and self.run_time > cache_info['expires']:
+            logging.debug("expire due to Expires header")
+            expires = True
+        elif fetched_age > config.get('cache_time_max', self.cache_time_max):
+            logging.debug("expire due to configured maximum cache time")
+            expires = True
+        elif 'max_age_time' in cache_info and self.run_time > cache_info['max_age_time']:
+            logging.debug("expire due to Cache-Control max-age")
+            expires = True
+        elif not any([key in cache_info for key in ['expires', 'cache_time_max', 'max_age_time']]) and fetched_age > self.cache_time_default:
+            # no mechanism for expiry - using default instead
+            logging.debug("expire due to configured default cache time")
+            expires = True
+        if not expires and os.path.isfile(cache_path):
+            logging.debug("no expire condition met")
+            return cache_path
+
+        # head first with files having Last-Modified header
+        skip_fetch = False
+        if 'last_modified' in cache_info or 'etag' in cache_info:
+            # safely fetch as alow-privelege with sanity checks
+            request_success, metadata, data = self.safe_fetch(url, config, head_only=True)
+            if not request_success:
+                return cache_path
+            if metadata['status_code'] != 200:
+                logging.error(
+                    "Bad HTTP status fetching header %s: %d - %s",
+                    url, metadata['status_code'],
+                    data[:50] + ('...' if len(data) > 50 else '')
+                )
+                return cache_path
+            if 'last-modified' in metadata['headers']:
+                remote_file_time = email.utils.mktime_tz(email.utils.parsedate_tz(metadata['headers']['last-modified']))
+                if remote_file_time <= file_time:
+                    # not updated
+                    logging.debug("no expire due to Last-Modified not being newer")
+                    # update expires, max_age, max_age_time, and fetched still happen below anyway
+                    skip_fetch = True
+            if 'etag' in metadata['headers'] and 'etag' in cache_info:
+                # TODO potentially cache_info has -gzip appended within quotes
+                logging.debug("%s == %s", metadata['headers']['etag'], cache_info['etag'])
+                header_etag_normalised = re.sub(r'-gzip("?)$', r'\1', metadata['headers']['etag'])
+                cache_etag_normalised = re.sub(r'-gzip("?)$', r'\1', cache_info['etag'])
+                logging.debug("%s ~~ %s", header_etag_normalised, cache_etag_normalised)
+                if metadata['headers']['etag'] == cache_info['etag']:
+                    # no change
+                    logging.debug("no expire due to ETag not changed")
+                    # update expires, max_age, max_age_time, and fetched still happen below anyway
+                    skip_fetch = True
+        if skip_fetch and os.path.isfile(cache_path):
+            # something shows it's the same
+            logging.info("header check results in skip fetch")
+        else:
+            # need to download for real
+            logging.info("fecthing (no or expired cache)")
+            # safely fetch as alow-privelege with sanity checks
+            request_success, metadata, data = self.safe_fetch(url, config)
+            if not request_success:
+                return cache_path
+            if metadata['status_code'] != 200:
+                logging.error(
+                    "Bad HTTP status fetching header %s: %d - %s",
+                    url, metadata['status_code'],
+                    data[:50] + ('...' if len(data) > 50 else '')
+                )
+                return cache_path
+        # process cache related headers
+        cache_info = {
+            'fetched': self.run_time,
+        }
+        if 'expires' in metadata['headers']:
+            cache_info['expires'] = email.utils.mktime_tz(email.utils.parsedate_tz(metadata['headers']['expires']))
+        if 'etag' in metadata['headers']:
+            cache_info['etag'] = metadata['headers']['etag']
+        if 'cache-control' in metadata['headers']:
+            max_age = None
+            for part in metadata['headers']['cache-control'].split(','):
+                part = part.strip()
+                if part.startswith('max-age='):
+                    max_age = int(part.split('=')[1])
+            if max_age is not None:
+                cache_info['max_age'] = max_age
+                cache_info['max_age_time'] = self.run_time + max_age
+        remote_file_time = None
+        if 'last-modified' in metadata['headers']:
+            remote_file_time = email.utils.mktime_tz(email.utils.parsedate_tz(metadata['headers']['last-modified']))
+            cache_info['last_modified'] = remote_file_time
+        if not skip_fetch:
+            logging.debug("Writing file: %s", cache_path)
+            # store if we are for real
+            temp_file = cache_path + '.TMP'
+            with open(temp_file, 'wt') as f_raw:
+                f_raw.write(data)
+            # set file time from Last-Modified if available
+            if remote_file_time is not None:
+                os.utime(temp_file, times=(remote_file_time, remote_file_time))
+            os.rename(temp_file, cache_path)
+        # update status
+        self.cache_status[url] = cache_info
+        self.save_status()
+        return cache_path
+
+
+
+
+
+
+
+
+
+
+def main():
+    # setup logger
+    logging.config.dictConfig(
+        {
+            'version': 1,
+            'formatters': {
+                'basic': {'format': 'py-hole-bind9RPZ[%(process)d]: %(levelname)s - %(message)s'},
+            },
+            'handlers': {
+                'console': {
+                    'class': 'logging.StreamHandler',
+                    'formatter': 'basic',
+                    'level': 'DEBUG',
+                    'stream': 'ext://sys.stderr',
+                },
+                'syslog': {
+                    'class': 'logging.handlers.SysLogHandler',
+                    'formatter': 'basic',
+                    'level': 'INFO',
+                    'address': '/dev/log',
+                },
+            },
+            'loggers': {
+                None: {
+                    'handlers': ['syslog'] + (['console'] if sys.stderr.isatty() else []),
+                    #'level': 'INFO',
+                    'level': 'DEBUG',
+                },
+            },
+        }
+    )
+    logging.info("begin updating blocklists...")
+
+    # read command line arguments with argparse
+    parser = argparse.ArgumentParser(
+        description='A Pi-hole inspired DNS firewall for use with bind/named using RPZ'
+    )
+    parser.add_argument(
+        '-c', '--config', type=str,
+        help='Configuration file to use (default: /etc/bind/py-hole-bind9RPZ_config.yaml)',
+        default='/etc/bind/py-hole-bind9RPZ_config.yaml'
+    )
+    args = parser.parse_args()
+
+
+    try:
+        # read config - load yaml file or error
+        config = CONFIG_DEFAULT.copy()
+        try:
+            with open(args.config, 'rt') as f_conf:
+                config.update(yaml.safe_load(f_conf))
+            # always exclude localhost else we get it blocked for 127.0.0.1 keys
+            config['exclusions']['localhost'] = True
+        except FileNotFoundError:
+            raise FatalErrorStop("Configuration file {} not found\n".format(args.config))
+        # at minimum we need to end up with an rpzfile
+        if 'rpzfile' not in config:
+            raise FatalErrorStop("Setting for 'rpzfile' not found in configuration {}\n".format(args.config))
+        # and a template with a serial number
+        if 'rpztemplate' not in config or not re.search(r'<SERIAL>', config['rpztemplate']):
+            raise FatalErrorStop("Setting for 'rpztemplate' including a serial number marker '<SERIAL>' not found in configuration {}\n".format(args.config))
+        # and a reloadzonecommand:
+        if 'reloadzonecommand' not in config:
+            raise FatalErrorStop("Setting for 'reloadzonecommand' not found in configuration {}\n".format(args.config))
+
+
+
+        cacher = FetchCache(
+            config['cachedir'],
+            user_agent=USER_AGENT,
+            fetch_user=config.get('fetch_user'),
+            fetch_group=config.get('fetch_group'),
+            cache_time_min=config.get('cache_time_min'),
+            cache_time_default=config.get('cache_time_default'),
+            cache_time_max=config.get('cache_time_max'),
+            # TODO from config
+            # sane_line_max_default=SANE_LINE_MAX_DEFAULT,
+            sane_line_re_default=SANE_LINE_RE_DEFAULT,
+            cache_file_prefix=config['cacheprefix'],
+        )
+
+
+        # refresh cache as needed
+        zone = ZoneFile(config)
+        if not os.path.isdir(config['cachedir']):
+            logging.info("Creating cache directory: %s", config['cachedir'])
+            os.makedirs(config['cachedir'])
+        time_now = time.time()
+        if not isinstance(config['blacklists'], list):
+            raise FatalErrorStop("Old style config file - please update before use")
+        for info in config['blacklists']:
+            logging.info("processing %s", info['url'])
+            if info['format'] in ('hosts', 'raw'):
+                info['sane_line_comment_ignore'] = '#'
+            elif info['format'] == 'rpz':
+                info['sane_line_comment_ignore'] = ';'
+            else:
+                raise FatalErrorStop("Unknown format {} for {}".format(info['format'], info['url']))
+            info['_cachefile'] = cacher.cached_fetch(info['url'], info)
+
+        # check we have sane files
+        for info in config['blacklists']:
+            try:
+                cachefile_age = time_now - os.path.getmtime(info['_cachefile'])
+                if cachefile_age > info.get('cache_sane_age', config['cache_sane_age']):
+                    raise FatalErrorStop(
+                        "Cache file is too old (failing to fetch?) at {:0.1f} > {:0.1f} days: {}".format(
+                            cachefile_age / 86400,
+                            info.get('cache_sane_age', config['cache_sane_age']) / 86400,
+                            info['_cachefile'],
+                        )
+                    )
+            except FileNotFoundError:
+                raise FatalErrorStop("Cache file is missing (never successfully fetched?): {}".format(info['_cachefile']))
+
+        # process cached files
+        for info in config['blacklists']:
+            zone.add_blank()
+            zone.add_comment("=============================================================================")
+            zone.add_comment(" Source: {}".format(info['url']))
+            zone.add_comment("=============================================================================")
+            zone.add_blank()
+            # process data
+            recordcount = 0
+            skipcount = {}
+            logging.info("reading %s", info['_cachefile'])
+            with open(info['_cachefile'], 'rt') as f_cache:
+                if info['format'] == 'hosts':
+                    # comments start "#", we only take lines matching "hostskey"
+                    for line in f_cache:
+                        line = line.rstrip('\r\n')
+                        # separate comments that could be whole line or after a record
+                        match = re.fullmatch(r'([^#]*?)#(.*)', line)
+                        if match:
+                            line = match.group(1)
+                            zone.add_comment(match.group(2).lstrip())
+                        line = line.rstrip()
+                        if not line:
+                            continue
+                        # process the host line
+                        hostlist = re.split(r'\s+', line)
+                        if len(hostlist) < 2:
+                            raise RuntimeError("Bad line doesn't match format {}: {}".format(info['format'], line))
+                        if hostlist[0] != info['hostskey']:
+                            # not a matching key
+                            continue
+                        for host in hostlist[1:]:
+                            if not HOST_SANITIY_RE.fullmatch(host):
+                                raise FatalErrorStop("Bad line doesn't match format {}: {}".format(info['format'], line))
+                            recordcount += 1
+                            added, reason = zone.add_host(host, info['url'])
+                            if not added:
+                                skipcount[reason] = skipcount.get(reason, 0) + 1
+                elif info['format'] == 'raw':
+                    # comments start "#"
+                    for line in f_cache:
+                        line = line.rstrip('\r\n')
+                        # separate comments that could be whole line or after a record
+                        match = re.fullmatch(r'([^#]*?)#(.*)', line)
+                        if match:
+                            line = match.group(1)
+                            zone.add_comment(match.group(2).lstrip())
+                        line = line.rstrip()
+                        if not line:
+                            continue
+                        # process the raw (host only) line
+                        host = line.strip()
+                        if not HOST_SANITIY_RE.fullmatch(host):
+                            raise FatalErrorStop("Bad line doesn't match format {}: {}".format(info['format'], line))
+                        recordcount += 1
+                        added, reason = zone.add_host(host, info['url'])
+                        if not added:
+                            skipcount[reason] = skipcount.get(reason, 0) + 1
+                elif info['format'] == 'rpz':
+                    # comments start ";", stirctly not starting at the beginning of line
+                    for line in f_cache:
+                        line = line.rstrip('\r\n')
+                        # separate comments that could be whole line or after a record
+                        match = re.fullmatch(r'([^;]*?);(.*)', line)
+                        if match:
+                            line = match.group(1)
+                            zone.add_comment(match.group(2).lstrip())
+                        line = line.rstrip()
+                        if not line:
+                            continue
+                        # handle zone header items - skip them
+                        if line.startswith('$TTL '):
+                            continue
+                        if re.match(r'@?\s+SOA\s', line):
+                            continue
+                        if re.match(r'@?\s+NS\s', line):
+                            continue
+                        # process the zone lines
+                        host, response = line.strip().split(None, 1)
+                        if not re.fullmatch(r'CNAME\s+\.', response):
+                            raise FatalErrorStop("rpz response not as expected in {}: {}".format(source, line))
+                        if not HOST_SANITIY_RE.fullmatch(host):
+                            raise FatalErrorStop("Bad line doesn't match format {}: {}".format(info['format'], line))
+                        recordcount += 1
+                        added, reason = zone.add_host(host, info['url'], allow_wildcard=True)
+                        if not added:
+                            skipcount[reason] = skipcount.get(reason, 0) + 1
+                else:
+                    raise FatalErrorStop("Unknown format {} for {}".format(info['format'], info['url']))
+            if recordcount == 0:
+                raise FatalErrorStop("Got record count of {:d} for {}".format(recordcount, info['url']))
+            for reason in sorted(skipcount):
+                logging.info("skipped %0.1f%% %s", 100 * skipcount[reason] / recordcount, reason)
+
+        # if we have a local blacklist, add that also
+        if 'localblacklist' in config:
+            logging.info("adding localblacklist from %s", args.config)
+            zone.add_blank()
+            zone.add_comment("=============================================================================")
+            zone.add_comment(" Source: Local blacklist from {}".format(args.config))
+            zone.add_comment("=============================================================================")
+            zone.add_blank()
+            recordcount = 0
+            skipcount = {}
+            for host in config['localblacklist']:
                 recordcount += 1
-                zone.add_host(host, source)
-    elif config['blacklists'][source]['format'] == 'raw':
-        # comments start "#"
-        for line in data.splitlines():
-            if line == '':
-                continue
-            if line.startswith('#'):
-                zone.add_comment(line[1:])
-                continue
-            host = line.strip()
-            recordcount += 1
-            zone.add_host(host, source)
-    elif config['blacklists'][source]['format'] == 'rpz':
-        # comments start ";", stirctly not starting at the beginning of line
-        for line in data.splitlines():
-            if line == '':
-                continue
-            if line.startswith(';'):
-                zone.add_comment(line[1:])
-                continue
-            if line.startswith('$TTL '):
-                continue
-            if re.match(r'@?\s+SOA\s', line):
-                continue
-            if re.match(r'@?\s+NS\s', line):
-                continue
-            rpz= line.strip()
-            recordcount += 1
-            zone.add_rpz(rpz, source)
-    else:
-        sys.exit("Unknown format {} for {}".format(config['blacklists'][source]['format'], source))
-    if recordcount == 0:
-        sys.exit("Got recordcount of {:d} for {}".format(recordcount, source))
+                added, reason = zone.add_host(host, args.config, allow_wildcard=True)
+                if not added:
+                    skipcount[reason] = skipcount.get(reason, 0) + 1
+            for reason in sorted(skipcount):
+                logging.info("skipped %0.1f%% %s", 100 * skipcount[reason] / recordcount, reason)
+    except FatalErrorStop as exc:
+        logging.error(exc.args[0])
+        sys.exit(exc.args[0])
+    except SystemExit:
+        raise
+    except:
+        logging.exception("Unhandled exception:")
+        raise
 
-# if we have a local blacklist, add that also
-if 'localblacklist' in config:
-    zone.add_blank()
-    zone.add_comment("=============================================================================")
-    zone.add_comment(" Source: Local blacklist from {}".format(CONFIGFILE))
-    zone.add_comment("=============================================================================")
-    zone.add_blank()
-    for host in config['localblacklist']:
-        zone.add_host(host, CONFIGFILE)
+    # make some noise about stray cache files
+    for path in cacher.stray_cache_files():
+        logging.warning("stray cache file: %s", path)
+
+    # write the config['rpzfile'] file
+    zone.write()
+    # reload bind zone file
+    subprocess.run(config['reloadzonecommand'], check=True)
 
 
-# write the config['rpzfile'] file
-zone.write()
-# reload bind zone file
-subprocess.Popen(config['reloadzonecommand'], stdin=None, stdout=None)
+
+
+if __name__ == '__main__':
+    main()
