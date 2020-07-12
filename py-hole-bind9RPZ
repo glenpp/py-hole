@@ -90,7 +90,10 @@ class ZoneFile:
             self.config['rpztemplate']
         )
         self.output_lines = outputdata.splitlines(keepends=True)
-        self.seenbefore = {}
+        self.seen_before = {}   # keep track of what was seen before
+        self.stats_totals = {}  # total hosts per source
+        self.stats_skip = {}    # skip types per source
+        self.excludes_used = {} # exclusions matched and source
 
     def add_comment(self, comment):
         """Add a comment line
@@ -102,11 +105,18 @@ class ZoneFile:
         """
         self.output_lines.append("\n")
 
-    def add_host(self, host, source, allow_wildcard=False):
-        """Add a blacklisted host to bind zone file
+    def _stats_skip_increment(self, source, reason):
+        if source not in self.stats_skip:
+            self.stats_skip[source] = {}
+        self.stats_skip[source][reason] = self.stats_skip[source].get(reason, 0) + 1
 
-        :arg host: str, host pattern to blacklist
-        :arg source: str, identifier for the source of this host pattern
+
+    def add_host(self, host, source, allow_wildcard=False):
+        """Add a blacklisted host to bind zone file with safety checks
+
+        :param host: str, host pattern to blacklist
+        :param source: str, identifier for the source of this host pattern
+        :param allow_wildcard: bool, optional (default False) allow wildcard host patterns
         :returns: tuple, consisting of:
             added: bool, True if the record was adeed, False if not (dup, bad record, etc.)
             reason: str|None, why the record was not added
@@ -119,22 +129,29 @@ class ZoneFile:
                 raise FatalErrorStop("bad wildcard host doesn't match format: {}".format(host))
             else:
                 raise FatalErrorStop("bad host doesn't match format: {}".format(host))
+        # keep track of stats
+        self.stats_totals[source] = self.stats_totals.get(source, 0) + 1
         # exclude hosts we've already seen
-        if host in self.seenbefore:
-            self.output_lines.append("; seenbefore in {} {}\n".format(self.seenbefore[host], host))
-            return False, "seenbefore"
+        if host in self.seen_before:
+            self.output_lines.append("; seenbefore in {} {}\n".format(self.seen_before[host], host))
+            self._stats_skip_increment(source, "seenbefore")
         # exclude hosts we've explicitly set as excluded
         if host in self.config['exclusions']:
             self.output_lines.append("; excluded {}\n".format(host))
-            return False, "excluded"
+            self._stats_skip_increment(source, "excluded")
+            # also keep track of excludes
+            if host not in self.excludes_used:
+                self.excludes_used[host] = {}
+            self.excludes_used[host][source] = True
+            return
         # try add the line
         outputline = "{} {}\n".format(host, self.config['defaultresponse'])
         if len(host) >= 255:  # seems to be a limit from https://www.ietf.org/rfc/rfc1035.txt
-            self.output_lines.append(';too-long in {} {}\n'.format(self.seenbefore[host], host))
-            return False, "too-long"
+            self.output_lines.append(';toolong in {} {}\n'.format(self.seen_before[host], host))
+            self._stats_skip_increment(source, "toolong")
+            return
         self.output_lines.append(outputline)
-        self.seenbefore[host] = source
-        return True, None
+        self.seen_before[host] = source
 
     def write(self):
         """Write out the bind RPZ sone file
@@ -144,6 +161,42 @@ class ZoneFile:
                 f_rpz.write(line)
         os.rename(self.config['rpzfile'], self.config['rpzfile'] + '.old')
         os.rename(self.config['rpzfile'] + '.TMP', self.config['rpzfile'])
+
+    def stats_source(self, source):
+        """Report (log) per-source stats"""
+        logging.info("Stats for %s", source)
+        logging.info("+ Total hosts: %d", self.stats_totals[source])
+        for reason in sorted(self.stats_skip.get(source, {})):
+            logging.info("+ Skipped %s:  %0.1f%% (%d)",
+                         reason,
+                         100 * self.stats_skip[source][reason] / self.stats_totals[source],
+                         self.stats_skip[source][reason])
+
+    def stats_overall(self):
+        """Report (log) overall stats"""
+        logging.info("Stats overall (all sources)")
+        total = sum(self.stats_totals.values())
+        logging.info("  Total hosts: %d", total)
+        total_skipped = {}
+        for stats in self.stats_skip.values():
+            for reason, count in stats.items():
+                total_skipped[reason] = total_skipped.get(reason, 0) + count
+        for reason in sorted(total_skipped):
+            logging.info("  Skipped %s:  %0.1f%% (%d)",
+                         reason,
+                         100 * total_skipped[reason] / total,
+                         total_skipped[reason])
+
+    def stats_exclude(self):
+        """Report (log) info about exclusions to enable better maintainance"""
+        for host in sorted(self.config['exclusions']):
+            if host in ('localhost'):
+                # special cases we add so ignore
+                continue
+            if host not in self.excludes_used:
+                logging.warning("Unused exclusion: %s", host)
+
+
 
 
 class FetchCache:
@@ -625,6 +678,8 @@ def main():
                 info['sane_line_comment_ignore'] = ';'
             else:
                 raise FatalErrorStop("Unknown format {} for {}".format(info['format'], info['url']))
+            if '_cachefile' in info:
+                raise FatalErrorStop("Duplicate (file already calculated) source: {}".format(info['url']))
             info['_cachefile'] = cacher.cached_fetch(info['url'], info)
 
         # check we have sane files
@@ -651,7 +706,6 @@ def main():
             zone.add_blank()
             # process data
             recordcount = 0
-            skipcount = {}
             logging.info("reading %s", info['_cachefile'])
             with open(info['_cachefile'], 'rt') as f_cache:
                 if info['format'] == 'hosts':
@@ -677,9 +731,7 @@ def main():
                             if not HOST_SANITIY_RE.fullmatch(host):
                                 raise FatalErrorStop("Bad line doesn't match format {}: {}".format(info['format'], line))
                             recordcount += 1
-                            added, reason = zone.add_host(host, info['url'])
-                            if not added:
-                                skipcount[reason] = skipcount.get(reason, 0) + 1
+                            zone.add_host(host, info['url'])
                 elif info['format'] == 'raw':
                     # comments start "#"
                     for line in f_cache:
@@ -697,9 +749,7 @@ def main():
                         if not HOST_SANITIY_RE.fullmatch(host):
                             raise FatalErrorStop("Bad line doesn't match format {}: {}".format(info['format'], line))
                         recordcount += 1
-                        added, reason = zone.add_host(host, info['url'])
-                        if not added:
-                            skipcount[reason] = skipcount.get(reason, 0) + 1
+                        zone.add_host(host, info['url'])
                 elif info['format'] == 'rpz':
                     # comments start ";", stirctly not starting at the beginning of line
                     for line in f_cache:
@@ -722,19 +772,17 @@ def main():
                         # process the zone lines
                         host, response = line.strip().split(None, 1)
                         if not re.fullmatch(r'CNAME\s+\.', response):
-                            raise FatalErrorStop("rpz response not as expected in {}: {}".format(source, line))
+                            raise FatalErrorStop("rpz response not as expected: {}".format(line))
                         if not HOST_SANITIY_RE.fullmatch(host):
                             raise FatalErrorStop("Bad line doesn't match format {}: {}".format(info['format'], line))
                         recordcount += 1
-                        added, reason = zone.add_host(host, info['url'], allow_wildcard=True)
-                        if not added:
-                            skipcount[reason] = skipcount.get(reason, 0) + 1
+                        zone.add_host(host, info['url'], allow_wildcard=True)
                 else:
                     raise FatalErrorStop("Unknown format {} for {}".format(info['format'], info['url']))
             if recordcount == 0:
                 raise FatalErrorStop("Got record count of {:d} for {}".format(recordcount, info['url']))
-            for reason in sorted(skipcount):
-                logging.info("skipped %0.1f%% %s", 100 * skipcount[reason] / recordcount, reason)
+            # stats for this srouce
+            zone.stats_source(info['url'])
 
         # if we have a local blacklist, add that also
         if 'localblacklist' in config:
@@ -744,15 +792,8 @@ def main():
             zone.add_comment(" Source: Local blacklist from {}".format(args.config))
             zone.add_comment("=============================================================================")
             zone.add_blank()
-            recordcount = 0
-            skipcount = {}
             for host in config['localblacklist']:
-                recordcount += 1
-                added, reason = zone.add_host(host, args.config, allow_wildcard=True)
-                if not added:
-                    skipcount[reason] = skipcount.get(reason, 0) + 1
-            for reason in sorted(skipcount):
-                logging.info("skipped %0.1f%% %s", 100 * skipcount[reason] / recordcount, reason)
+                zone.add_host(host, args.config, allow_wildcard=True)
     except FatalErrorStop as exc:
         logging.error(exc.args[0])
         sys.exit(exc.args[0])
@@ -762,6 +803,9 @@ def main():
         logging.exception("Unhandled exception:")
         raise
 
+    # report on overall stats
+    zone.stats_overall()
+    zone.stats_exclude()
     # make some noise about stray cache files
     for path in cacher.stray_cache_files():
         logging.warning("stray cache file: %s", path)
