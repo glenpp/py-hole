@@ -20,7 +20,6 @@ EXCLUDE = [
 ]
 INCLUDE = [
     'py-hole-bind9RPZ',
-    'py-hole-dnsmasq',
 ]
 
 
