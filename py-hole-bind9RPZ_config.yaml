@@ -1,24 +1,4 @@
 ---
-
-rpzfile: /etc/bind/db.rpz.example.com
-rpztemplate: |
-  ; see http://www.zytrax.com/books/dns/ch9/rpz.html
-  ; zone file rpz.example.com
-  $TTL 2h ; default TTL
-  $ORIGIN rpz.example.com.
-  ; email address is never used
-  @ SOA nonexistent.nodomain.none. dummy.nodomain.none. <SERIAL> 12h 15m 3w 2h
-  ; name server is never accessed but out-of-zone
-  ;         NS  nonexistant.nodomain.none
-    NS  dnsserver.example.com.
-  
-  ;example.net CNAME .
-  ;*.example.net CNAME .
-  
-  ; Automatic rules start
-  ;
-# end of template
-
 # cachedir: /var/local/bindRPZ
 # cacheprefix: bindRPZcache-
 # cache_sane_age: 1209600   # 14 days after which this will fail
@@ -29,6 +9,54 @@ rpztemplate: |
 # fetch_group: nogroup
 reloadzonecommand: [ 'rndc', 'reload', 'rpz.example.com' ]
 # defaultresponse: CNAME .
+
+# blacklists can be put into catgories - "default" will be used where no category is provided
+# each category must have a rpz_file, reload_zone_command, rpz_template
+categories:
+  default:
+    # this is used when no category is specified in a blacklist
+    rpz_file: /etc/bind/db.rpz.example.com
+    reload_zone_command: [ 'rndc', 'reload', 'rpz.example.com' ]
+    rpz_template: |
+      ; see http://www.zytrax.com/books/dns/ch9/rpz.html
+      ; zone file rpz.example.com
+      $TTL 2h ; default TTL
+      $ORIGIN rpz.example.com.
+      ; email address is never used
+      @ SOA nonexistent.nodomain.none. dummy.nodomain.none. <SERIAL> 12h 15m 3w 2h
+      ; name server is never accessed but out-of-zone
+      ;         NS  nonexistant.nodomain.none
+      NS  dnsserver.example.com.
+      
+      ;example.net CNAME .
+      ;*.example.net CNAME .
+      
+      ; Automatic rules start
+      ;
+    # end of template
+    #
+    # Templates will have the following substitutions:
+    #   <SERIAL> => automatically generated serial number
+
+  malicious:
+    rpz_file: /etc/bind/db.rpz-malicious.example.com
+    reload_zone_command: [ 'rndc', 'reload', 'rpz-malicious.example.com' ]
+    rpz_template: |
+      ; see http://www.zytrax.com/books/dns/ch9/rpz.html
+      ; zone file rpz-malicious.example.com
+      $TTL 2h ; default TTL
+      $ORIGIN rpz-malicious.example.com.
+      ; email address is never used
+      @ SOA nonexistent.nodomain.none. dummy.nodomain.none. <SERIAL> 12h 15m 3w 2h
+      ; name server is never accessed but out-of-zone
+      ;         NS  nonexistant.nodomain.none
+      NS  dnsserver.example.com.
+      
+      ;example.net CNAME .
+      ;*.example.net CNAME .
+      
+      ; Automatic rules start
+      ;
 
 
 # Blacklists
@@ -41,6 +69,7 @@ blacklists:
   - url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
     # StevenBlack
     # big agregated list for many sources
+    # category: default
     format: hosts
     hostskey: 0.0.0.0
     # sanity checks
@@ -49,6 +78,7 @@ blacklists:
 
   - url: https://urlhaus.abuse.ch/downloads/rpz/
     # urlhaus.abuse.ch
+    category: malicious
     # malware distribution
     format: rpz
     # sanity checks

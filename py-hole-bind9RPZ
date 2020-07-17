@@ -50,6 +50,7 @@ CONFIG_DEFAULT = {
     'cacheprefix': 'bindRPZcache-',
     'cache_sane_age': 1209600,  # 14 days after which this will fail
     'defaultresponse': 'CNAME .',
+    'categories': {},
     'blacklists': {
         'StevenBlack': {
             'url': 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts',
@@ -78,17 +79,15 @@ class FatalErrorStop(Exception):
 class ZoneFile:
     """Render a bind RPZ zone file from a template
     """
-    def __init__(self, config):
+    def __init__(self, config, category):
         """Constructor
 
         :arg config: dict, configuration data
         """
         self.config = config
-        outputdata = re.sub(
-            r'<SERIAL>',
-            '{:010d}'.format(int(time.time())),
-            self.config['rpztemplate']
-        )
+        self.category = config['categories'][category]
+        outputdata = self.category['rpz_template']
+        outputdata = outputdata.replace(r'<SERIAL>', '{:010d}'.format(int(time.time())))
         self.output_lines = outputdata.splitlines(keepends=True)
         self.seen_before = {}   # keep track of what was seen before
         self.stats_totals = {}  # total hosts per source
@@ -156,11 +155,15 @@ class ZoneFile:
     def write(self):
         """Write out the bind RPZ sone file
         """
-        with open(self.config['rpzfile'] + '.TMP', 'wt') as f_rpz:
+        temp_file = self.category['rpz_file'] + '.TMP'
+        with open(temp_file, 'wt') as f_rpz:
             for line in self.output_lines:
                 f_rpz.write(line)
-        os.rename(self.config['rpzfile'], self.config['rpzfile'] + '.old')
-        os.rename(self.config['rpzfile'] + '.TMP', self.config['rpzfile'])
+        try:
+            os.rename(self.category['rpz_file'], self.category['rpz_file'] + '.old')
+        except FileNotFoundError:
+            pass
+        os.rename(temp_file, self.category['rpz_file'])
 
     def stats_source(self, source):
         """Report (log) per-source stats"""
@@ -213,7 +216,9 @@ class FetchCache:
         :kw cache_time_max: int, optional maximum seconds to cache a file for (default max of 7d or cache_time_default * 14)
         :kw cache_file_prefix: str, optional prefix to add to cache files, default ''
         :kw sane_line_max_default: int, optional default maximum line length (default 256)
-        :kw sane_line_re_default: str, optional line sanity check regex (default quite permissive) TODO
+        :kw sane_line_re_default: str, optional line sanity check regex (default quite permissive)
+        :kw retry_attempts: int, optional number of retries for failed attempts (default 3)
+        :kw retry_delay: int, optional seconds between retries for failed attempts (default 5)
         """
         self.cache_dir = cache_dir
         self.run_time = time.time()
@@ -233,8 +238,12 @@ class FetchCache:
             raise ValueError("Invalid cache_time_max - should be more than self.cache_time_default")
         self.cache_file_prefix = kwargs_clean.get('cache_file_prefix', '')
         self.sane_line_max_default = kwargs_clean.get('sane_line_max_default', 256)
-        self.sane_line_re_default = kwargs_clean.get('sane_line_re_default',
-                                                     r'[\w\-\+\*\.,:;# \t\(\)\[\]@&/\'"<>]*')
+        self.sane_line_re_default = kwargs_clean.get(
+            'sane_line_re_default',
+            r'[\w\-\.:/]{{0,{}}}'.format(self.sane_line_max_default)
+        )
+        self.retry_attempts = kwargs.get('retry_attempts', 3)
+        self.retry_delay = kwargs.get('retry_delay', 5)
         self.cache_fiels_expect = []
         # load current status
         self.cache_status_path = os.path.join(self.cache_dir, self.cache_file_prefix + 'cache_status.yaml')
@@ -308,21 +317,30 @@ class FetchCache:
                 logging.warning("Can't drop privelege: %s", exc)
             os.umask(0o077)
             # fetch url
-            try:
-                if head_only:
-                    response = requests.head(url, headers={'User-Agent': self.user_agent})
-                else:
-                    response = requests.get(url, headers={'User-Agent': self.user_agent})
-            except requests.exceptions.ConnectionError as exc:
-                logging.error("ConnectionError fetching %s :: %s", url, str(exc.args))
-                sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
-                sys.stdout.write('\n')
-                sys.exit(1)
-            except:
-                logging.exception("Exception fetching %s", url)
-                sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
-                sys.stdout.write('\n')
-                sys.exit(2)
+            tries = self.retry_attempts
+            response = None
+            while response is None:
+                tries -= 1
+                try:
+                    if head_only:
+                        response = requests.head(url, headers={'User-Agent': self.user_agent})
+                    else:
+                        response = requests.get(url, headers={'User-Agent': self.user_agent})
+                except requests.exceptions.ConnectionError as exc:
+                    if tries > 0:
+                        logging.warning("ConnectionError (%d tries left) fetching %s :: %s", tries, url, str(exc.args))
+                        time.sleep(self.retry_delay)
+                        continue
+                    # no tries left - fail
+                    logging.error("ConnectionError fetching %s :: %s", url, str(exc.args))
+                    sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
+                    sys.stdout.write('\n')
+                    sys.exit(1)
+                except:
+                    logging.exception("Unhandled exception fetching %s", url)
+                    sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
+                    sys.stdout.write('\n')
+                    sys.exit(2)
             # format output to json metadata + body
             sys.stdout.write(
                 json.dumps(
@@ -372,8 +390,9 @@ class FetchCache:
                 check_line = line.rstrip('\r\n')
                 if 'sane_line_comment_ignore' in config:
                     check_line = check_line.split(config['sane_line_comment_ignore'])[0]
+                    check_line = check_line.rstrip()
                 if not line_re.fullmatch(check_line):
-                    logging.error("Line %d no match for regex: %s", i + 1, line)
+                    logging.error("Line %d no match for regex: %s", i + 1, check_line)
                     sys.exit(3)
                 sys.stdout.write(line.encode('unicode_escape').decode() + '\n')
         except SystemExit:
@@ -508,12 +527,10 @@ class FetchCache:
                     # update expires, max_age, max_age_time, and fetched still happen below anyway
                     skip_fetch = True
             if 'etag' in metadata['headers'] and 'etag' in cache_info:
-                # TODO potentially cache_info has -gzip appended within quotes
-                logging.debug("%s == %s", metadata['headers']['etag'], cache_info['etag'])
+                # potentially cache_info has -gzip appended within quotes so needs normalising
                 header_etag_normalised = re.sub(r'-gzip("?)$', r'\1', metadata['headers']['etag'])
                 cache_etag_normalised = re.sub(r'-gzip("?)$', r'\1', cache_info['etag'])
-                logging.debug("%s ~~ %s", header_etag_normalised, cache_etag_normalised)
-                if metadata['headers']['etag'] == cache_info['etag']:
+                if header_etag_normalised == cache_etag_normalised:
                     # no change
                     logging.debug("no expire due to ETag not changed")
                     # update expires, max_age, max_age_time, and fetched still happen below anyway
@@ -635,16 +652,21 @@ def main():
             config['exclusions']['localhost'] = True
         except FileNotFoundError:
             raise FatalErrorStop("Configuration file {} not found\n".format(args.config))
-        # at minimum we need to end up with an rpzfile
-        if 'rpzfile' not in config:
-            raise FatalErrorStop("Setting for 'rpzfile' not found in configuration {}\n".format(args.config))
-        # and a template with a serial number
-        if 'rpztemplate' not in config or not re.search(r'<SERIAL>', config['rpztemplate']):
-            raise FatalErrorStop("Setting for 'rpztemplate' including a serial number marker '<SERIAL>' not found in configuration {}\n".format(args.config))
-        # and a reloadzonecommand:
-        if 'reloadzonecommand' not in config:
-            raise FatalErrorStop("Setting for 'reloadzonecommand' not found in configuration {}\n".format(args.config))
+#        # at minimum we need to end up with an rpzfile
+#        if 'rpzfile' not in config:
+#            raise FatalErrorStop("Setting for 'rpzfile' not found in configuration {}\n".format(args.config))
+#        # and a template with a serial number
+#        if 'rpztemplate' not in config or not re.search(r'<SERIAL>', config['rpztemplate']):
+#            raise FatalErrorStop("Setting for 'rpztemplate' including a serial number marker '<SERIAL>' not found in configuration {}\n".format(args.config))
+#        # and a reloadzonecommand:
+#        if 'reloadzonecommand' not in config:
+#            raise FatalErrorStop("Setting for 'reloadzonecommand' not found in configuration {}\n".format(args.config))
 
+
+        # sort out categories
+        categories = config['categories'].copy()
+        for category in categories:
+            categories[category]['_zone'] = ZoneFile(config, category)
 
 
         cacher = FetchCache(
@@ -663,7 +685,6 @@ def main():
 
 
         # refresh cache as needed
-        zone = ZoneFile(config)
         if not os.path.isdir(config['cachedir']):
             logging.info("Creating cache directory: %s", config['cachedir'])
             os.makedirs(config['cachedir'])
@@ -699,6 +720,10 @@ def main():
 
         # process cached files
         for info in config['blacklists']:
+            category = info.get('category', 'default')
+            zone = categories[category]['_zone']
+            if category not in categories:
+                raise FatalErrorStop("Category '{}' is not defined".format(category))
             zone.add_blank()
             zone.add_comment("=============================================================================")
             zone.add_comment(" Source: {}".format(info['url']))
@@ -706,7 +731,7 @@ def main():
             zone.add_blank()
             # process data
             recordcount = 0
-            logging.info("reading %s", info['_cachefile'])
+            logging.info("processing cached file %s", info['_cachefile'])
             with open(info['_cachefile'], 'rt') as f_cache:
                 if info['format'] == 'hosts':
                     # comments start "#", we only take lines matching "hostskey"
@@ -786,6 +811,10 @@ def main():
 
         # if we have a local blacklist, add that also
         if 'localblacklist' in config:
+            category = config.get('localblacklist_category', 'default')
+            zone = categories[category]['_zone']
+            if category not in categories:
+                raise FatalErrorStop("Category '{}' is not defined".format(category))
             logging.info("adding localblacklist from %s", args.config)
             zone.add_blank()
             zone.add_comment("=============================================================================")
@@ -810,10 +839,16 @@ def main():
     for path in cacher.stray_cache_files():
         logging.warning("stray cache file: %s", path)
 
-    # write the config['rpzfile'] file
-    zone.write()
+    # write the rpz zone files
+    for category in categories.values():
+        category['_zone'].write()
     # reload bind zone file
-    subprocess.run(config['reloadzonecommand'], check=True)
+    for category, category_info in categories.items():
+        proc = subprocess.run(category_info['reload_zone_command'], capture_output=True)
+        if proc.returncode:
+            logging.error("reload_zone_command failed (exit %d) for category '%s': %s", proc.returncode, category, proc.stderr)
+        else:
+            logging.debug("reload_zone_command successful for category '%s': %s", category, proc.stdout)
 
 
 
