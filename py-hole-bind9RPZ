@@ -193,7 +193,7 @@ class ZoneFile:
     def stats_exclude(self):
         """Report (log) info about exclusions to enable better maintainance"""
         for host in sorted(self.config['exclusions']):
-            if host in ('localhost'):
+            if host == 'localhost':
                 # special cases we add so ignore
                 continue
             if host not in self.excludes_used:
@@ -205,6 +205,13 @@ class ZoneFile:
 class FetchCache:
     """Safe fetching (HTTP GET) with caching
     """
+    # between _safe_fetch_child() and safe_fetch()
+    EXIT_SUCCESS = 0
+    EXIT_UNKWNOWN = 1
+    EXIT_CONNECT = 2
+    EXIT_EXCEPT = 3
+    EXIT_SANITY = 4
+
     def __init__(self, cache_dir, **kwargs):
         """Setup cachhe & http collector
 
@@ -291,11 +298,7 @@ class FetchCache:
         :param config: dict, configuration specific to this fetch, see safe_fetch()
         :param head_only: bool, if we should perform HEAD rather than GET, see safe_fetch()
 
-        Internally, exit status used are:
-            0: success
-            1: connection error
-            2: unhandlex http exception
-            3: sanity checks failed
+        Internally, exit status used are as per constants above.
         """
         # child - this safely fetches the data
         # we must do everything in an exception catch to log problems
@@ -326,21 +329,23 @@ class FetchCache:
                         response = requests.head(url, headers={'User-Agent': self.user_agent})
                     else:
                         response = requests.get(url, headers={'User-Agent': self.user_agent})
+                    if tries < self.retry_attempts - 1:
+                        logging.info("Succeeded with %d tries left fetching: %s", tries, url)
                 except requests.exceptions.ConnectionError as exc:
                     if tries > 0:
                         logging.warning("ConnectionError (%d tries left) fetching %s :: %s", tries, url, str(exc.args))
                         time.sleep(self.retry_delay)
                         continue
                     # no tries left - fail
-                    logging.error("ConnectionError fetching %s :: %s", url, str(exc.args))
+                    logging.error("ConnectionError no more tries fetching %s :: %s", url, str(exc.args))
                     sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
                     sys.stdout.write('\n')
-                    sys.exit(1)
-                except:
+                    sys.exit(self.EXIT_CONNECT)
+                except: # pylint: disable=bare-except
                     logging.exception("Unhandled exception fetching %s", url)
                     sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
                     sys.stdout.write('\n')
-                    sys.exit(2)
+                    sys.exit(self.EXIT_EXCEPT)
             # format output to json metadata + body
             sys.stdout.write(
                 json.dumps(
@@ -357,35 +362,35 @@ class FetchCache:
                 header_length = int(response.headers['Content-Length'])
                 if header_length > config['sane_size_max']:
                     logging.error("Content-Length header > sane_size_max: %s > %d", response.headers['Content-Length'], config['sane_size_max'])
-                    sys.exit(3)
+                    sys.exit(self.EXIT_SANITY)
             if not head_only:
                 # seems sometimes we get zero lenght for HEAD so min must be checked here
                 if header_length is not None and not header_length:
                     logging.error("Zero Content-Length header: %s", response.headers['Content-Length'])
-                    sys.exit(3)
+                    sys.exit(self.EXIT_SANITY)
                 # sanity check data
                 data_length = len(response.text)
                 if not data_length:
                     logging.error("Zero length data recieved")
-                    sys.exit(3)
+                    sys.exit(self.EXIT_SANITY)
                 # sanity check Content-Length != response.text
                 if header_length is not None and data_length < header_length:
                     logging.error("Content-Length header < data recieved: %d < %d", data_length, header_length)
-                    sys.exit(3)
+                    sys.exit(self.EXIT_SANITY)
                 # sanity check sizes
                 if data_length > config['sane_size_max']:
                     logging.error("Data length > sane_size_max: %d > %d", data_length, config['sane_size_max'])
-                    sys.exit(3)
+                    sys.exit(self.EXIT_SANITY)
                 if data_length < config['sane_size_min']:
                     logging.error("Data length < sane_size_min: %d < %d", data_length, config['sane_size_min'])
-                    sys.exit(3)
+                    sys.exit(self.EXIT_SANITY)
             # apply sanity checks on response and output lines
             line_re = re.compile(config.get('sane_line_re', self.sane_line_re_default))
             line_max = config.get('sane_line_max', self.sane_line_max_default)
             for i, line in enumerate(response.text.splitlines(True)):
                 if len(line) > line_max:
                     logging.error("Line %d length > sane_line_max: %d > %d", i + 1, len(line), line_max)
-                    sys.exit(3)
+                    sys.exit(self.EXIT_SANITY)
                 # take line before comment when sane_line_comment_ignore is enabled
                 check_line = line.rstrip('\r\n')
                 if 'sane_line_comment_ignore' in config:
@@ -393,14 +398,14 @@ class FetchCache:
                     check_line = check_line.rstrip()
                 if not line_re.fullmatch(check_line):
                     logging.error("Line %d no match for regex: %s", i + 1, check_line)
-                    sys.exit(3)
+                    sys.exit(self.EXIT_SANITY)
                 sys.stdout.write(line.encode('unicode_escape').decode() + '\n')
         except SystemExit:
             raise
         except:
             logging.exception("fail:")
             raise
-        sys.exit(0)
+        sys.exit(self.EXIT_SUCCESS)
 
 
     def safe_fetch(self, url, config, head_only=False):
@@ -411,9 +416,12 @@ class FetchCache:
         :parm config: dict, config relating to this url/fetch, with keys:
             sane_size_max: int, maximum reported size to accept
             sane_size_min: int, minimum reported size to accept
-            sane_line_max': int, optional length to check lines against( default self.sane_line_max_default)
-            sane_line_re: str, optional regex to check lines against (default self.sane_line_re_default)
-            sane_line_comment_ignore: str, optional comment start character(s) after which will be ignored for sane_line_re checks
+            sane_line_max': int, optional length to check lines against
+                (default self.sane_line_max_default)
+            sane_line_re: str, optional regex to check lines against
+                (default self.sane_line_re_default)
+            sane_line_comment_ignore: str, optional comment start character(s) after which
+                will be ignored for sane_line_re checks
         :param head_only: bool, if we should perform HEAD rather than GET
         :returns: tuple, of:
             request_success: bool, if the http request was made
@@ -438,13 +446,15 @@ class FetchCache:
             # reap child
             _, status = os.waitpid(pid, 0)
             exit_status = status >> 8 & 0xff
-            if exit_status == 1:
+            if exit_status == self.EXIT_UNKWNOWN:
+                logging.error("Fetch unkown failure")
+            elif exit_status == self.EXIT_CONNECT:
                 logging.error("Fetch connection failed")
-            elif exit_status == 2:
+            elif exit_status == self.EXIT_EXCEPT:
                 logging.error("Fetch http exception")
-            elif exit_status == 3:
+            elif exit_status == self.EXIT_SANITY:
                 logging.error("Fetch sanity check failed")
-            elif exit_status != 0:
+            elif exit_status != self.EXIT_SUCCESS:
                 logging.critical("Fetch failed with unknown exit_status | status: %d | %d", exit_status, status)
             # decode data
             metadata = None
@@ -846,9 +856,11 @@ def main():
     for category, category_info in categories.items():
         proc = subprocess.run(category_info['reload_zone_command'], capture_output=True)
         if proc.returncode:
-            logging.error("reload_zone_command failed (exit %d) for category '%s': %s", proc.returncode, category, proc.stderr)
+            logging.error("reload_zone_command failed (exit %d) for category '%s': %s",
+                          proc.returncode, category, proc.stderr)
         else:
-            logging.debug("reload_zone_command successful for category '%s': %s", category, proc.stdout)
+            logging.debug("reload_zone_command successful for category '%s': %s",
+                          category, proc.stdout)
 
 
 
