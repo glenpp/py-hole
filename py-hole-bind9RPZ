@@ -341,7 +341,7 @@ class FetchCache:
                     sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
                     sys.stdout.write('\n')
                     sys.exit(self.EXIT_CONNECT)
-                except: # pylint: disable=bare-except
+                except Exception:   # pylint: disable=broad-except
                     logging.exception("Unhandled exception fetching %s", url)
                     sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
                     sys.stdout.write('\n')
@@ -369,13 +369,13 @@ class FetchCache:
                     logging.error("Zero Content-Length header: %s", response.headers['Content-Length'])
                     sys.exit(self.EXIT_SANITY)
                 # sanity check data
-                data_length = len(response.text)
+                data_length = len(response.text.encode())
                 if not data_length:
                     logging.error("Zero length data recieved")
                     sys.exit(self.EXIT_SANITY)
                 # sanity check Content-Length != response.text
                 if header_length is not None and data_length < header_length:
-                    logging.error("Content-Length header < data recieved: %d < %d", data_length, header_length)
+                    logging.error("Data length < Content-Length header %d < %d", data_length, header_length)
                     sys.exit(self.EXIT_SANITY)
                 # sanity check sizes
                 if data_length > config['sane_size_max']:
