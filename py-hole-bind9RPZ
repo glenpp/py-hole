@@ -730,7 +730,7 @@ def main():
                 if cachefile_age_days > info.get('cache_sane_age_days', config['cache_sane_age_days']):
                     raise FatalErrorStop(
                         "Cache file is too old (failing to fetch?) at {:0.1f} > {:0.1f} days: {}".format(
-                            cachefile_age / 86400,
+                            cachefile_age_days,
                             info.get('cache_sane_age_days', config['cache_sane_age_days']),
                             info['_cachefile'],
                         )
