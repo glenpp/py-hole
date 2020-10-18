@@ -1,7 +1,7 @@
 ---
 # cachedir: /var/local/bindRPZ
 # cacheprefix: bindRPZcache-
-# cache_sane_age: 1209600   # 14 days after which this will fail
+# cache_sane_age_days: 14   # after which this will fail
 # cache_time_min: 3600   # 1 hour default
 # cache_time_default: 43200   # 12 hours default
 # cache_time_max: 604800  # 7 days default
@@ -90,7 +90,7 @@ blacklists:
 #    # sanity checks
 #    sane_size_min: 32768
 #    sane_size_max: 131072
-#    cache_sane_age: 7776000 # 90 days
+#    cache_sane_age_days: 90
 
 # currently we support formats of:
 #   * raw

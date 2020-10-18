@@ -48,7 +48,7 @@ CONFIG_DEFAULT = {
     # base config overridden by config_file
     'cachedir': '/var/local/bindRPZ',
     'cacheprefix': 'bindRPZcache-',
-    'cache_sane_age': 1209600,  # 14 days after which this will fail
+    'cache_sane_age_days': 14,  # after which this will fail
     'defaultresponse': 'CNAME .',
     'categories': {},
     'blacklists': {
@@ -291,11 +291,11 @@ class FetchCache:
         return stray_files
 
 
-    def _safe_fetch_child(self, url, config, head_only):
+    def _safe_fetch_child(self, url, fetch_config, head_only):
         """Safely (with minimum priveledge) fetch the url
 
         :param url: str, url to fetch, see safe_fetch()
-        :param config: dict, configuration specific to this fetch, see safe_fetch()
+        :param fetch_config: dict, configuration specific to this fetch, see safe_fetch()
         :param head_only: bool, if we should perform HEAD rather than GET, see safe_fetch()
 
         Internally, exit status used are as per constants above.
@@ -360,13 +360,16 @@ class FetchCache:
             header_length = None
             if 'Content-Length' in response.headers:
                 header_length = int(response.headers['Content-Length'])
-                if header_length > config['sane_size_max']:
-                    logging.error("Content-Length header > sane_size_max: %s > %d", response.headers['Content-Length'], config['sane_size_max'])
+                if header_length > fetch_config['sane_size_max']:
+                    logging.error("Content-Length header > sane_size_max: %s > %d",
+                                  response.headers['Content-Length'],
+                                  fetch_config['sane_size_max'])
                     sys.exit(self.EXIT_SANITY)
             if not head_only:
                 # seems sometimes we get zero lenght for HEAD so min must be checked here
                 if header_length is not None and not header_length:
-                    logging.error("Zero Content-Length header: %s", response.headers['Content-Length'])
+                    logging.error("Zero Content-Length header: %s",
+                                  response.headers['Content-Length'])
                     sys.exit(self.EXIT_SANITY)
                 # sanity check data
                 data_length = len(response.text.encode())
@@ -378,23 +381,27 @@ class FetchCache:
                     logging.error("Data length < Content-Length header %d < %d", data_length, header_length)
                     sys.exit(self.EXIT_SANITY)
                 # sanity check sizes
-                if data_length > config['sane_size_max']:
-                    logging.error("Data length > sane_size_max: %d > %d", data_length, config['sane_size_max'])
+                if data_length > fetch_config['sane_size_max']:
+                    logging.error("Data length > sane_size_max: %d > %d",
+                                  data_length,
+                                  fetch_config['sane_size_max'])
                     sys.exit(self.EXIT_SANITY)
-                if data_length < config['sane_size_min']:
-                    logging.error("Data length < sane_size_min: %d < %d", data_length, config['sane_size_min'])
+                if data_length < fetch_config['sane_size_min']:
+                    logging.error("Data length < sane_size_min: %d < %d",
+                                  data_length,
+                                  fetch_config['sane_size_min'])
                     sys.exit(self.EXIT_SANITY)
             # apply sanity checks on response and output lines
-            line_re = re.compile(config.get('sane_line_re', self.sane_line_re_default))
-            line_max = config.get('sane_line_max', self.sane_line_max_default)
+            line_re = re.compile(fetch_config.get('sane_line_re', self.sane_line_re_default))
+            line_max = fetch_config.get('sane_line_max', self.sane_line_max_default)
             for i, line in enumerate(response.text.splitlines(True)):
                 if len(line) > line_max:
                     logging.error("Line %d length > sane_line_max: %d > %d", i + 1, len(line), line_max)
                     sys.exit(self.EXIT_SANITY)
                 # take line before comment when sane_line_comment_ignore is enabled
                 check_line = line.rstrip('\r\n')
-                if 'sane_line_comment_ignore' in config:
-                    check_line = check_line.split(config['sane_line_comment_ignore'])[0]
+                if 'sane_line_comment_ignore' in fetch_config:
+                    check_line = check_line.split(fetch_config['sane_line_comment_ignore'])[0]
                     check_line = check_line.rstrip()
                 if not line_re.fullmatch(check_line):
                     logging.error("Line %d no match for regex: %s", i + 1, check_line)
@@ -717,14 +724,21 @@ def main():
         for info in config['blacklists']:
             try:
                 cachefile_age = time_now - os.path.getmtime(info['_cachefile'])
-                if cachefile_age > info.get('cache_sane_age', config['cache_sane_age']):
+                cachefile_age_days = cachefile_age / 86400
+                if 'cache_sane_age' in config or 'cache_sane_age' in info:
+                    logging.warning("cache_sane_age is deprecated, use cache_sane_age_days instead")
+                if cachefile_age_days > info.get('cache_sane_age_days', config['cache_sane_age_days']):
                     raise FatalErrorStop(
                         "Cache file is too old (failing to fetch?) at {:0.1f} > {:0.1f} days: {}".format(
                             cachefile_age / 86400,
-                            info.get('cache_sane_age', config['cache_sane_age']) / 86400,
+                            info.get('cache_sane_age_days', config['cache_sane_age_days']),
                             info['_cachefile'],
                         )
                     )
+                if cachefile_age_days > config['cache_sane_age_days']:
+                    logging.info("Cache file is older than normal (%0.1f days): %s",
+                                 cachefile_age_days,
+                                 info['_cachefile'])
             except FileNotFoundError:
                 raise FatalErrorStop("Cache file is missing (never successfully fetched?): {}".format(info['_cachefile']))
 
