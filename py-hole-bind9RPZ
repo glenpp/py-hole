@@ -309,7 +309,7 @@ class FetchCache:
                 break
             # drop priveledge
             try:
-                # these might not wrok if we don't have permission
+                # these might not work if we don't have permission
                 os.setgroups([])
                 os.setgid(self.fetch_gid)
                 os.setuid(self.fetch_uid)
@@ -404,7 +404,7 @@ class FetchCache:
 
 
     def safe_fetch(self, url, config, head_only=False):
-        """Safely (with minimum priveledge) fetch the url using _fetch_safe_child()
+        """Safely (with minimum priveledge) fetch the url using _safe_fetch_child()
 
 
         :param url: str, URL to download if needed
