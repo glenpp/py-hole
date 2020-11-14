@@ -26,7 +26,7 @@ categories:
       @ SOA nonexistent.nodomain.none. dummy.nodomain.none. <SERIAL> 12h 15m 3w 2h
       ; name server is never accessed but out-of-zone
       ;         NS  nonexistant.nodomain.none
-      NS  dnsserver.example.com.
+      @   IN NS  dnsserver.example.com.
       
       ;example.net CNAME .
       ;*.example.net CNAME .
@@ -50,7 +50,7 @@ categories:
       @ SOA nonexistent.nodomain.none. dummy.nodomain.none. <SERIAL> 12h 15m 3w 2h
       ; name server is never accessed but out-of-zone
       ;         NS  nonexistant.nodomain.none
-      NS  dnsserver.example.com.
+      @   IN NS  dnsserver.example.com.
       
       ;example.net CNAME .
       ;*.example.net CNAME .
