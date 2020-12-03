@@ -24,18 +24,19 @@ See: https://www.pitt-pladdy.com/blog/_20170407-105402_0100_DNS_Firewall_blackho
 import time
 import re
 import os
+import io
 import sys
-import subprocess
 import argparse
-import json
 import pwd
 import grp
+import json
 import glob
 import logging
 import logging.config
+import subprocess
 import email.utils  # for date parsing
-import yaml
 import requests
+import yaml
 
 
 USER_AGENT = 'py-hole RPZ blackhole manager'
@@ -201,7 +202,6 @@ class ZoneFile:
 
 
 
-
 class FetchCache:
     """Safe fetching (HTTP GET) with caching
     """
@@ -231,7 +231,12 @@ class FetchCache:
         self.run_time = time.time()
         # clear out any None values which should be defualts
         kwargs_clean = {key: value for key, value in kwargs.items() if value is not None}
-        self.user_agent = kwargs_clean.get('user_agent', 'Python HTTP Fetch & Cache')
+        # setup session
+        self.session = requests.Session()
+        self.session.headers = {
+            'User-Agent': kwargs_clean.get('user_agent', 'Python HTTP Fetch & Cache'),
+        }
+        # setup configuration parameters
         self.fetch_user = kwargs_clean.get('fetch_user', 'nobody')
         self.fetch_group = kwargs_clean.get('fetch_group', 'nogroup')
         self.fetch_uid = pwd.getpwnam(self.fetch_user).pw_uid
@@ -291,6 +296,18 @@ class FetchCache:
         return stray_files
 
 
+    def _safe_fetch_child_logs(self, log_stream, status_code=None, headers=None):
+        data = {
+            'status_code': status_code,
+            'headers': {},
+            'logs': log_stream.getvalue(),
+        }
+        if headers is not None:
+            data['headers'] = {key.lower(): value for key, value in headers.items()}
+        sys.stdout.write(json.dumps(data))
+        sys.stdout.write('\n')
+
+
     def _safe_fetch_child(self, url, fetch_config, head_only):
         """Safely (with minimum priveledge) fetch the url
 
@@ -303,13 +320,20 @@ class FetchCache:
         # child - this safely fetches the data
         # we must do everything in an exception catch to log problems
         try:
-            # remove log stream handlers - they break output
+            # remove log stream handlers - they break output sending stderr
             for handler in logging.getLogger().handlers:
                 if not isinstance(handler, logging.StreamHandler):
                     continue
                 # remove this
                 logging.getLogger().removeHandler(handler)
                 break
+            # add our own stream handler to capture for passing back to parent
+            log_strings = io.StringIO()
+            handler = logging.StreamHandler(stream=log_strings)
+            formatter = logging.Formatter(fmt='safe_fetch[%(process)d]: %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            handler.setLevel(logging.DEBUG)
+            logging.getLogger().addHandler(handler)
             # drop priveledge
             try:
                 # these might not wrok if we don't have permission
@@ -320,15 +344,16 @@ class FetchCache:
                 logging.warning("Can't drop privelege: %s", exc)
             os.umask(0o077)
             # fetch url
+            tls_verify = fetch_config.get('tls_verify', True)
             tries = self.retry_attempts
             response = None
             while response is None:
                 tries -= 1
                 try:
                     if head_only:
-                        response = requests.head(url, headers={'User-Agent': self.user_agent})
+                        response = self.session.head(url, verify=tls_verify)
                     else:
-                        response = requests.get(url, headers={'User-Agent': self.user_agent})
+                        response = self.session.get(url, verify=tls_verify)
                     if tries < self.retry_attempts - 1:
                         logging.info("Succeeded with %d tries left fetching: %s", tries, url)
                 except requests.exceptions.ConnectionError as exc:
@@ -338,24 +363,14 @@ class FetchCache:
                         continue
                     # no tries left - fail
                     logging.error("ConnectionError no more tries fetching %s :: %s", url, str(exc.args))
-                    sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
-                    sys.stdout.write('\n')
+                    self._safe_fetch_child_logs(log_strings)
                     sys.exit(self.EXIT_CONNECT)
                 except Exception:   # pylint: disable=broad-except
                     logging.exception("Unhandled exception fetching %s", url)
-                    sys.stdout.write(json.dumps({'headers': {}, 'status_code': None}))
-                    sys.stdout.write('\n')
+                    self._safe_fetch_child_logs(log_strings)
                     sys.exit(self.EXIT_EXCEPT)
             # format output to json metadata + body
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        'headers': {key.lower(): value for key, value in response.headers.items()},
-                        'status_code': response.status_code,
-                    }
-                )
-            )
-            sys.stdout.write('\n')
+            self._safe_fetch_child_logs(log_strings, response.status_code, response.headers)
             # sanity checks
             header_length = None
             if 'Content-Length' in response.headers:
@@ -460,7 +475,7 @@ class FetchCache:
             elif exit_status == self.EXIT_EXCEPT:
                 logging.error("Fetch http exception")
             elif exit_status == self.EXIT_SANITY:
-                logging.error("Fetch sanity check failed")
+                logging.error("Fetch sanity check failed (see logs for detail)")
             elif exit_status != self.EXIT_SUCCESS:
                 logging.critical("Fetch failed with unknown exit_status | status: %d | %d", exit_status, status)
             # decode data
@@ -469,6 +484,15 @@ class FetchCache:
             for line in data.decode('utf-8').splitlines():
                 if metadata is None:
                     metadata = json.loads(line)
+                    # re-log any logs we have
+                    for log in metadata['logs'].splitlines():
+                        pid, log = log.split(']: ', 1)
+                        _, pid = pid.split('[', 1)
+                        level, log = log.split(' - ', 1)
+                        msg = "child[{}]: {}".format(pid, log)
+                        if level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+                            raise ValueError("Unhanled level: {}".format(level))
+                        getattr(logging, level.lower())(msg)
                     continue
                 lines += line.encode().decode('unicode_escape')
             request_success = status == 0
