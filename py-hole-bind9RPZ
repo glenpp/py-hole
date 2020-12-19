@@ -356,6 +356,11 @@ class FetchCache:
                         response = self.session.get(url, verify=tls_verify)
                     if tries < self.retry_attempts - 1:
                         logging.info("Succeeded with %d tries left fetching: %s", tries, url)
+                except requests.exceptions.SSLError as exc:
+                    logging.exception("SSLError exception fetching %s", url)
+                    logging.error("Not retrying: %s", url)
+                    self._safe_fetch_child_logs(log_strings)
+                    sys.exit(self.EXIT_EXCEPT)
                 except requests.exceptions.ConnectionError as exc:
                     if tries > 0:
                         logging.warning("ConnectionError (%d tries left) fetching %s :: %s", tries, url, str(exc.args))
@@ -486,9 +491,14 @@ class FetchCache:
                     metadata = json.loads(line)
                     # re-log any logs we have
                     for log in metadata['logs'].splitlines():
-                        pid, log = log.split(']: ', 1)
-                        _, pid = pid.split('[', 1)
-                        level, log = log.split(' - ', 1)
+                        parts = log.split(']: ', 1)
+                        if len(parts) == 2:
+                            pid, log = parts
+                            _, pid = pid.split('[', 1)
+                            level, log = log.split(' - ', 1)
+                        else:
+                            # another line in the last log
+                            log = parts[0]
                         msg = "child[{}]: {}".format(pid, log)
                         if level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
                             raise ValueError("Unhanled level: {}".format(level))
