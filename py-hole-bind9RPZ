@@ -242,10 +242,12 @@ class FetchCache:
         self.fetch_uid = pwd.getpwnam(self.fetch_user).pw_uid
         self.fetch_gid = grp.getgrnam(self.fetch_group).gr_gid
         self.cache_time_min = kwargs_clean.get('cache_time_min', 3600)
-        self.cache_time_default = kwargs_clean.get('cache_time_default', max(43200, self.cache_time_min * 12))
+        self.cache_time_default = kwargs_clean.get('cache_time_default',
+                                                   max(43200, self.cache_time_min * 12))
         if self.cache_time_default <= self.cache_time_min:
             raise ValueError("Invalid cache_time_default - should be more than self.cache_time_min")
-        self.cache_time_max = kwargs_clean.get('cache_time_max', max(604800, self.cache_time_default * 14))
+        self.cache_time_max = kwargs_clean.get('cache_time_max',
+                                               max(604800, self.cache_time_default * 14))
         if self.cache_time_max <= self.cache_time_default:
             raise ValueError("Invalid cache_time_max - should be more than self.cache_time_default")
         self.cache_file_prefix = kwargs_clean.get('cache_file_prefix', '')
@@ -258,7 +260,8 @@ class FetchCache:
         self.retry_delay = kwargs.get('retry_delay', 5)
         self.cache_fiels_expect = []
         # load current status
-        self.cache_status_path = os.path.join(self.cache_dir, self.cache_file_prefix + 'cache_status.yaml')
+        self.cache_status_path = os.path.join(self.cache_dir,
+                                              self.cache_file_prefix + 'cache_status.yaml')
         self.cache_status = {}
         try:
             with open(self.cache_status_path, 'rt') as f_status:
@@ -307,6 +310,47 @@ class FetchCache:
         sys.stdout.write(json.dumps(data))
         sys.stdout.write('\n')
 
+    class _ChildFail(Exception):
+        pass
+
+    def _safe_fetch_url(self, url, fetch_config, head_only):
+        """Fetch url retrying on appropriate errors
+
+        :param url: str, url to fetch, see safe_fetch()
+        :param fetch_config: dict, configuration specific to this fetch, see safe_fetch()
+        :param head_only: bool, if we should perform HEAD rather than GET, see safe_fetch()
+        :returns: requests response object
+        """
+
+        tls_verify = fetch_config.get('tls_verify', True)
+        tries = self.retry_attempts
+        response = None
+        while response is None:
+            tries -= 1
+            try:
+                if head_only:
+                    response = self.session.head(url, verify=tls_verify)
+                else:
+                    response = self.session.get(url, verify=tls_verify)
+                if tries < self.retry_attempts - 1:
+                    logging.info("Succeeded with %d tries left fetching: %s", tries, url)
+            except requests.exceptions.SSLError as exc:
+                logging.exception("SSLError exception fetching %s", url)
+                logging.error("Not retrying: %s", url)
+                raise self._ChildFail(self.EXIT_EXCEPT)
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+                exception_name = exc.__class__.__name__
+                if tries > 0:
+                    logging.warning("%s (%d tries left) fetching %s :: %s",
+                                    exception_name, tries, url, str(exc.args))
+                    time.sleep(self.retry_delay)
+                    continue
+                # no tries left - fail
+                logging.error("%s no more tries fetching %s :: %s",
+                              exception_name, url, str(exc.args))
+                raise self._ChildFail(self.EXIT_CONNECT)
+        return response
+
 
     def _safe_fetch_child(self, url, fetch_config, head_only):
         """Safely (with minimum priveledge) fetch the url
@@ -317,23 +361,22 @@ class FetchCache:
 
         Internally, exit status used are as per constants above.
         """
-        # child - this safely fetches the data
+        # remove log stream handlers - they break output sending stderr
+        for handler in logging.getLogger().handlers:
+            if not isinstance(handler, logging.StreamHandler):
+                continue
+            # remove this
+            logging.getLogger().removeHandler(handler)
+            break
+        # add our own stream handler to capture for passing back to parent
+        log_strings = io.StringIO()
+        handler = logging.StreamHandler(stream=log_strings)
+        formatter = logging.Formatter(fmt='safe_fetch[%(process)d]: %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        handler.setLevel(logging.DEBUG)
+        logging.getLogger().addHandler(handler)
         # we must do everything in an exception catch to log problems
         try:
-            # remove log stream handlers - they break output sending stderr
-            for handler in logging.getLogger().handlers:
-                if not isinstance(handler, logging.StreamHandler):
-                    continue
-                # remove this
-                logging.getLogger().removeHandler(handler)
-                break
-            # add our own stream handler to capture for passing back to parent
-            log_strings = io.StringIO()
-            handler = logging.StreamHandler(stream=log_strings)
-            formatter = logging.Formatter(fmt='safe_fetch[%(process)d]: %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            handler.setLevel(logging.DEBUG)
-            logging.getLogger().addHandler(handler)
             # drop priveledge
             try:
                 # these might not wrok if we don't have permission
@@ -344,38 +387,8 @@ class FetchCache:
                 logging.warning("Can't drop privelege: %s", exc)
             os.umask(0o077)
             # fetch url
-            tls_verify = fetch_config.get('tls_verify', True)
-            tries = self.retry_attempts
             response = None
-            while response is None:
-                tries -= 1
-                try:
-                    if head_only:
-                        response = self.session.head(url, verify=tls_verify)
-                    else:
-                        response = self.session.get(url, verify=tls_verify)
-                    if tries < self.retry_attempts - 1:
-                        logging.info("Succeeded with %d tries left fetching: %s", tries, url)
-                except requests.exceptions.SSLError as exc:
-                    logging.exception("SSLError exception fetching %s", url)
-                    logging.error("Not retrying: %s", url)
-                    self._safe_fetch_child_logs(log_strings)
-                    sys.exit(self.EXIT_EXCEPT)
-                except requests.exceptions.ConnectionError as exc:
-                    if tries > 0:
-                        logging.warning("ConnectionError (%d tries left) fetching %s :: %s", tries, url, str(exc.args))
-                        time.sleep(self.retry_delay)
-                        continue
-                    # no tries left - fail
-                    logging.error("ConnectionError no more tries fetching %s :: %s", url, str(exc.args))
-                    self._safe_fetch_child_logs(log_strings)
-                    sys.exit(self.EXIT_CONNECT)
-                except Exception:   # pylint: disable=broad-except
-                    logging.exception("Unhandled exception fetching %s", url)
-                    self._safe_fetch_child_logs(log_strings)
-                    sys.exit(self.EXIT_EXCEPT)
-            # format output to json metadata + body
-            self._safe_fetch_child_logs(log_strings, response.status_code, response.headers)
+            response = self._safe_fetch_url(url, fetch_config, head_only)
             # sanity checks
             header_length = None
             if 'Content-Length' in response.headers:
@@ -384,40 +397,42 @@ class FetchCache:
                     logging.error("Content-Length header > sane_size_max: %s > %d",
                                   response.headers['Content-Length'],
                                   fetch_config['sane_size_max'])
-                    sys.exit(self.EXIT_SANITY)
+                    raise self._ChildFail(self.EXIT_SANITY)
             if not head_only:
                 # seems sometimes we get zero lenght for HEAD so min must be checked here
                 if header_length is not None and not header_length:
                     logging.error("Zero Content-Length header: %s",
                                   response.headers['Content-Length'])
-                    sys.exit(self.EXIT_SANITY)
+                    raise self._ChildFail(self.EXIT_SANITY)
                 # sanity check data
                 data_length = len(response.text.encode())
                 if not data_length:
                     logging.error("Zero length data recieved")
-                    sys.exit(self.EXIT_SANITY)
+                    raise self._ChildFail(self.EXIT_SANITY)
                 # sanity check Content-Length != response.text
                 if header_length is not None and data_length < header_length:
-                    logging.error("Data length < Content-Length header %d < %d", data_length, header_length)
-                    sys.exit(self.EXIT_SANITY)
+                    logging.error("Data length < Content-Length header %d < %d",
+                                  data_length, header_length)
+                    raise self._ChildFail(self.EXIT_SANITY)
                 # sanity check sizes
                 if data_length > fetch_config['sane_size_max']:
                     logging.error("Data length > sane_size_max: %d > %d",
                                   data_length,
                                   fetch_config['sane_size_max'])
-                    sys.exit(self.EXIT_SANITY)
+                    raise self._ChildFail(self.EXIT_SANITY)
                 if data_length < fetch_config['sane_size_min']:
                     logging.error("Data length < sane_size_min: %d < %d",
                                   data_length,
                                   fetch_config['sane_size_min'])
-                    sys.exit(self.EXIT_SANITY)
+                    raise self._ChildFail(self.EXIT_SANITY)
             # apply sanity checks on response and output lines
             line_re = re.compile(fetch_config.get('sane_line_re', self.sane_line_re_default))
             line_max = fetch_config.get('sane_line_max', self.sane_line_max_default)
             for i, line in enumerate(response.text.splitlines(True)):
                 if len(line) > line_max:
-                    logging.error("Line %d length > sane_line_max: %d > %d", i + 1, len(line), line_max)
-                    sys.exit(self.EXIT_SANITY)
+                    logging.error("Line %d length > sane_line_max: %d > %d",
+                                  i + 1, len(line), line_max)
+                    raise self._ChildFail(self.EXIT_SANITY)
                 # take line before comment when sane_line_comment_ignore is enabled
                 check_line = line.rstrip('\r\n')
                 if 'sane_line_comment_ignore' in fetch_config:
@@ -425,13 +440,27 @@ class FetchCache:
                     check_line = check_line.rstrip()
                 if not line_re.fullmatch(check_line):
                     logging.error("Line %d no match for regex: %s", i + 1, check_line)
-                    sys.exit(self.EXIT_SANITY)
+                    raise self._ChildFail(self.EXIT_SANITY)
+            # format output to json metadata + body
+            self._safe_fetch_child_logs(log_strings, response.status_code, response.headers)
+            sys.stdout.write('\n')  # end of header
+            for line in response.text.splitlines(True):
                 sys.stdout.write(line.encode('unicode_escape').decode() + '\n')
-        except SystemExit:
-            raise
+        except self._ChildFail as exc:
+            # first arg must be exit status
+            if response:
+                self._safe_fetch_child_logs(log_strings, response.status_code, response.headers)
+            else:
+                self._safe_fetch_child_logs(log_strings)
+            sys.exit(exc.args[0])
         except:
-            logging.exception("fail:")
-            raise
+            # unhandled exception - just log it
+            logging.exception("Unhandled exception processing %s", url)
+            if response:
+                self._safe_fetch_child_logs(log_strings, response.status_code, response.headers)
+            else:
+                self._safe_fetch_child_logs(log_strings)
+            sys.exit(self.EXIT_UNKWNOWN)
         sys.exit(self.EXIT_SUCCESS)
 
 
@@ -461,56 +490,84 @@ class FetchCache:
             raise KeyError("Missing config 'sane_size_max' for: {}".format(url))
         # fork and handl parent/child communication
         pid, child_fd = os.forkpty()
-        if pid:
-            # parent
-            # read data coming back
-            data = b''
-            try:
-                while True:
-                    data += os.read(child_fd, 1024)
-            except OSError:
-                pass
-            # reap child
-            _, status = os.waitpid(pid, 0)
-            exit_status = status >> 8 & 0xff
-            if exit_status == self.EXIT_UNKWNOWN:
-                logging.error("Fetch unkown failure")
-            elif exit_status == self.EXIT_CONNECT:
-                logging.error("Fetch connection failed")
-            elif exit_status == self.EXIT_EXCEPT:
-                logging.error("Fetch http exception")
-            elif exit_status == self.EXIT_SANITY:
-                logging.error("Fetch sanity check failed (see logs for detail)")
-            elif exit_status != self.EXIT_SUCCESS:
-                logging.critical("Fetch failed with unknown exit_status | status: %d | %d", exit_status, status)
-            # decode data
-            metadata = None
-            lines = ''
-            for line in data.decode('utf-8').splitlines():
-                if metadata is None:
-                    metadata = json.loads(line)
-                    # re-log any logs we have
-                    for log in metadata['logs'].splitlines():
-                        parts = log.split(']: ', 1)
-                        if len(parts) == 2:
-                            pid, log = parts
-                            _, pid = pid.split('[', 1)
-                            level, log = log.split(' - ', 1)
-                        else:
-                            # another line in the last log
-                            log = parts[0]
-                        msg = "child[{}]: {}".format(pid, log)
-                        if level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
-                            raise ValueError("Unhanled level: {}".format(level))
-                        getattr(logging, level.lower())(msg)
-                    continue
-                lines += line.encode().decode('unicode_escape')
-            request_success = status == 0
-            # done
-            return request_success, metadata, lines
-        else:
-            # child - this safely fetches the data
+        if not pid:
+            # child process - this safely fetches the data
             self._safe_fetch_child(url, config, head_only)
+            return
+        # parent process
+        # read data coming back
+        data = b''
+        try:
+            while True:
+                data += os.read(child_fd, 1024)
+        except OSError:
+            pass
+        data = data.decode('utf-8')
+        # reap child
+        _, status = os.waitpid(pid, 0)
+        exit_status = status >> 8 & 0xff
+        if exit_status == self.EXIT_UNKWNOWN:
+            logging.error("Fetch unkown failure")
+        elif exit_status == self.EXIT_CONNECT:
+            logging.error("Fetch connection failed")
+        elif exit_status == self.EXIT_EXCEPT:
+            logging.error("Fetch http exception")
+        elif exit_status == self.EXIT_SANITY:
+            logging.error("Fetch sanity check failed")
+        elif exit_status != self.EXIT_SUCCESS:
+            logging.critical("Fetch failed with unknown exit_status | status: %d | %d",
+                             exit_status, status)
+        # split header from body
+        header = None
+        metadata = None
+        if '\r\n\r\n' in data:
+            header, data = data.split('\r\n\r\n', 1)
+        elif exit_status != self.EXIT_SUCCESS:
+            # something bad happened - assume all we got was a header
+            header = data
+            data = ''
+        else:
+            # problem - can't separate header - assume things went wrong
+            logging.critical("child header could not be split - received lines follow:")
+        if header is not None:
+            # got a header - decode
+            try:
+                metadata = json.loads(header)
+            except:
+                logging.exception("Exception while decoding header")
+        if metadata is not None:
+            # good header - re-log any logs we have
+                for log in metadata['logs'].splitlines():
+                    parts = log.split(']: ', 1)
+                    if len(parts) == 2:
+                        pid, log = parts
+                        _, pid = pid.split('[', 1)
+                        level, log = log.split(' - ', 1)
+                    else:
+                        # another line in the last log
+                        log = parts[0]
+                    msg = "child[{}]: {}".format(pid, log)
+                    if level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+                        raise ValueError("Unhanled level: {}".format(level))
+                    getattr(logging, level.lower())(msg)
+        else:
+            # something went wrong - log child process output
+            if header is not None:
+                # data we want made it to the header
+                data = header
+            for i, line in enumerate(data.splitlines()):
+                if i >= 25:
+                    logging.critical("child lines limited to %d", i)
+                    break
+                logging.critical("child[%d]: %s", pid, line)
+            raise RuntimeError("Failed to process header from child process output.")
+        # decode data from body
+        lines = ''
+        for line in data.splitlines():
+            lines += line.encode().decode('unicode_escape')
+        request_success = status == 0
+        # done
+        return request_success, metadata, lines
 
 
     def cached_fetch(self, url, config):
@@ -548,7 +605,8 @@ class FetchCache:
         elif 'max_age_time' in cache_info and self.run_time > cache_info['max_age_time']:
             logging.debug("expire due to Cache-Control max-age")
             expires = True
-        elif not any([key in cache_info for key in ['expires', 'cache_time_max', 'max_age_time']]) and fetched_age > self.cache_time_default:
+        elif not any([key in cache_info for key in ['expires', 'cache_time_max', 'max_age_time']]) \
+                and fetched_age > self.cache_time_default:
             # no mechanism for expiry - using default instead
             logging.debug("expire due to configured default cache time")
             expires = True
