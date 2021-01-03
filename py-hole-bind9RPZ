@@ -62,7 +62,9 @@ CONFIG_DEFAULT = {
             'sane_size_max': 2097152,
             # 'sane_line_max': 256,
             # 'sane_line_re': r'',
-            # 'cache_sane_age': 7776000   # 90 days
+            # 'cache_sane_age_days': 90,
+            # and in post-processing:
+            # 'ignore_line_exact': ['line must match this exactly after strip()'],
         },
     },
     'exclusions': {},
@@ -853,6 +855,10 @@ def main():
                     # comments start "#", we only take lines matching "hostskey"
                     for line in f_cache:
                         line = line.rstrip('\r\n')
+                        # ignore lines
+                        if line in info.get('ignore_line_exact', []):
+                            zone.add_comment("# IGNORE: " + line)
+                            continue
                         # separate comments that could be whole line or after a record
                         match = re.fullmatch(r'([^#]*?)#(.*)', line)
                         if match:
@@ -877,6 +883,10 @@ def main():
                     # comments start "#"
                     for line in f_cache:
                         line = line.rstrip('\r\n')
+                        # ignore lines
+                        if line in info.get('ignore_line_exact', []):
+                            zone.add_comment("# IGNORE: " + line)
+                            continue
                         # separate comments that could be whole line or after a record
                         match = re.fullmatch(r'([^#]*?)#(.*)', line)
                         if match:
@@ -895,6 +905,10 @@ def main():
                     # comments start ";", stirctly not starting at the beginning of line
                     for line in f_cache:
                         line = line.rstrip('\r\n')
+                        # ignore lines
+                        if line in info.get('ignore_line_exact', []):
+                            zone.add_comment("# IGNORE: " + line)
+                            continue
                         # separate comments that could be whole line or after a record
                         match = re.fullmatch(r'([^;]*?);(.*)', line)
                         if match:

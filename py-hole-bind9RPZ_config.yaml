@@ -75,6 +75,7 @@ blacklists:
     # sanity checks
     sane_size_min: 1048576
     sane_size_max: 2097152
+    sane_line_max: 512  # can have some long comments
 
   - url: https://urlhaus.abuse.ch/downloads/rpz/
     # urlhaus.abuse.ch
@@ -83,15 +84,27 @@ blacklists:
     format: rpz
     # sanity checks
     sane_size_min: 32768
-    sane_size_max: 131072
+    sane_size_max: 262144
 
 #  - url: https://v.firebog.net/hosts/Easyprivacy.txt
 #    format: raw
 #    # sanity checks
 #    sane_size_min: 32768
 #    sane_size_max: 131072
-#    cache_sane_age_days: 90
+#    cache_sane_age_days: 90 # infrequently updated
 
+# Full optionss available for each blacklist:
+#   url: required, full URL to fetch the file from
+#   category: optional, specify a category (defined above) else "default" is used
+#   format: required, specify the format the file is in (see below)
+#   hostskey: required for "hosts" format (see below)
+#   sane_size_min: required, minimum accepted size in bytes (ie. protect against truncated, empty or other too small files)
+#   sane_size_max: required, maximum accepted size in bytes (ie. protect against runaway lists or other impact scenarios)
+#   sane_line_max: optional, change the defualt line length limit
+#   sane_line_re: optional, use different regex used for sanity checking lines than default
+#   cache_sane_age_days: optional, specify an age limit to accept older than default files
+#   ignore_line_exact: optional, list of exact lines to ignore when matched during processing files
+#
 # currently we support formats of:
 #   * raw
 #       - considers anything after "#" as comments
