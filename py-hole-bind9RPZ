@@ -40,8 +40,11 @@ import yaml
 
 
 USER_AGENT = 'py-hole RPZ blackhole manager'
-HOST_SANITIY_RE = re.compile(r'[\w\-\.]{3,255}')
-HOST_SANITIY_WILDCARD_RE = re.compile(r'(?:\*\.)?[\w\-\.]{3,255}')
+# checks when wildcards are not allowed, and are allowed on a source
+HOST_SANITIY_RE = re.compile(r'[\w\-\.]{3,253}')
+HOST_SANITIY_WILDCARD_RE = re.compile(r'(?:\*\.)?[\w\-\.]{3,253}')
+# overall checks
+SANE_RECORD_MAX = 254
 #SANE_LINE_MAX_DEFAULT = 256
 SANE_LINE_RE_DEFAULT = r'[\w\-\+\*\.,:;# \t\(\)\[\]@&%/\'\\`"<>=!\?~\|\$]*'
 
@@ -96,6 +99,15 @@ class ZoneFile:
         self.stats_totals = {}  # total hosts per source
         self.stats_skip = {}    # skip types per source
         self.excludes_used = {} # exclusions matched and source
+        # work out length of origin / zone
+        # bind seems to count maximum length with this appended
+        template = self.config['categories'][category]['rpz_template']
+        for line in template.splitlines():
+            if line.startswith('$ORIGIN '):
+                zone = line.split(' ', 1)[1]
+                zone = zone.strip()
+                self.zone_length = len(zone)
+                break
 
     def add_comment(self, comment):
         """Add a comment line
@@ -147,9 +159,11 @@ class ZoneFile:
             self.excludes_used[host][source] = True
             return
         # try add the line
+        # limit from https://www.ietf.org/rfc/rfc1035.txt
         outputline = "{} {}\n".format(host, self.config['defaultresponse'])
-        if len(host) >= 255:  # seems to be a limit from https://www.ietf.org/rfc/rfc1035.txt
-            self.output_lines.append(';toolong in {} {}\n'.format(self.seen_before[host], host))
+        total_length = len(host.rstrip('.')) + 1 + self.zone_length
+        if total_length > SANE_RECORD_MAX:
+            self.output_lines.append(';toolong in {} {}\n'.format(source, host))
             self._stats_skip_increment(source, "toolong")
             return
         self.output_lines.append(outputline)
