@@ -63,7 +63,7 @@ CONFIG_DEFAULT = {
             # sanity checks
             'sane_size_min': 1048576,
             'sane_size_max': 2097152,
-            # 'sane_line_max': 256,
+            'sane_line_max': 300,
             # 'sane_line_re': r'',
             # 'cache_sane_age_days': 90,
             # and in post-processing:
