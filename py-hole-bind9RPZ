@@ -394,13 +394,14 @@ class FetchCache:
         # we must do everything in an exception catch to log problems
         try:
             # drop priveledge
-            try:
-                # these might not wrok if we don't have permission
-                os.setgroups([])
-                os.setgid(self.fetch_gid)
-                os.setuid(self.fetch_uid)
-            except PermissionError as exc:
-                logging.warning("Can't drop privelege: %s", exc)
+            if self.fetch_uid:
+                try:
+                    # these might not work if we don't have permission
+                    os.setgroups([])
+                    os.setgid(self.fetch_gid)
+                    os.setuid(self.fetch_uid)
+                except PermissionError as exc:
+                    logging.warning("Can't drop privelege: %s", exc)
             os.umask(0o077)
             # fetch url
             response = None
@@ -481,7 +482,7 @@ class FetchCache:
 
 
     def safe_fetch(self, url, config, head_only=False):
-        """Safely (with minimum priveledge) fetch the url using _fetch_safe_child()
+        """Safely (with minimum priveledge) fetch the url using _safe_fetch_child()
 
 
         :param url: str, URL to download if needed
