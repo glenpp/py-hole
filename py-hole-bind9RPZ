@@ -950,7 +950,7 @@ def main():
                                     ignore_match = True
                                     break
                             if ignore_match:
-                            zone.add_comment("# IGNORE: " + line)
+                                zone.add_comment("# IGNORE: " + line)
                             continue
                         # separate comments that could be whole line or after a record
                         match = re.fullmatch(r'([^;]*?);(.*)', line)
