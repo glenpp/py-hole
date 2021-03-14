@@ -68,6 +68,7 @@ CONFIG_DEFAULT = {
             # 'cache_sane_age_days': 90,
             # and in post-processing:
             # 'ignore_line_exact': ['line must match this exactly after strip()'],
+            # 'ignore_line_startswith': ['line must match start of line'],
         },
     },
     'exclusions': {},
@@ -163,6 +164,7 @@ class ZoneFile:
         outputline = "{} {}\n".format(host, self.config['defaultresponse'])
         total_length = len(host.rstrip('.')) + 1 + self.zone_length
         if total_length > SANE_RECORD_MAX:
+            # TODO is it practical to turn this into a wildcard to retain safety?
             self.output_lines.append(';toolong in {} {}\n'.format(source, host))
             self._stats_skip_increment(source, "toolong")
             return
@@ -873,6 +875,15 @@ def main():
                         if line in info.get('ignore_line_exact', []):
                             zone.add_comment("# IGNORE: " + line)
                             continue
+                        elif 'ignore_line_startswith' in info:
+                            ignore_match = False
+                            for ignore in info['ignore_line_startswith']:
+                                if line.startswith(ignore):
+                                    ignore_match = True
+                                    break
+                            if ignore_match:
+                                zone.add_comment("# IGNORE: " + line)
+                                continue
                         # separate comments that could be whole line or after a record
                         match = re.fullmatch(r'([^#]*?)#(.*)', line)
                         if match:
@@ -901,6 +912,15 @@ def main():
                         if line in info.get('ignore_line_exact', []):
                             zone.add_comment("# IGNORE: " + line)
                             continue
+                        elif 'ignore_line_startswith' in info:
+                            ignore_match = False
+                            for ignore in info['ignore_line_startswith']:
+                                if line.startswith(ignore):
+                                    ignore_match = True
+                                    break
+                            if ignore_match:
+                                zone.add_comment("# IGNORE: " + line)
+                                continue
                         # separate comments that could be whole line or after a record
                         match = re.fullmatch(r'([^#]*?)#(.*)', line)
                         if match:
@@ -921,6 +941,15 @@ def main():
                         line = line.rstrip('\r\n')
                         # ignore lines
                         if line in info.get('ignore_line_exact', []):
+                            zone.add_comment("# IGNORE: " + line)
+                            continue
+                        elif 'ignore_line_startswith' in info:
+                            ignore_match = False
+                            for ignore in info['ignore_line_startswith']:
+                                if line.startswith(ignore):
+                                    ignore_match = True
+                                    break
+                            if ignore_match:
                             zone.add_comment("# IGNORE: " + line)
                             continue
                         # separate comments that could be whole line or after a record
