@@ -43,10 +43,10 @@ USER_AGENT = 'py-hole RPZ blackhole manager'
 # checks when wildcards are not allowed, and are allowed on a source
 HOST_SANITIY_RE = re.compile(r'[\w\-\.]{3,253}')
 HOST_SANITIY_WILDCARD_RE = re.compile(r'(?:\*\.)?[\w\-\.]{3,253}')
-# overall checks
+# overall checks - sane basics, users should override if they have their own special requirements
 SANE_RECORD_MAX = 254
 #SANE_LINE_MAX_DEFAULT = 256
-SANE_LINE_RE_DEFAULT = r'[\w\-\+\*\.,:;# \t\(\)\[\]@&%/\'\\`"<>=!\?~\|\$]*'
+SANE_LINE_RE_DEFAULT = r'[\w\-\+\*\.,:;# \t\(\)\[\]@&%/\'\\`"<>=!\?~\|\$!^]{0,256}'
 
 CONFIG_DEFAULT = {
     # base config overridden by config_file
@@ -55,22 +55,9 @@ CONFIG_DEFAULT = {
     'cache_sane_age_days': 14,  # after which this will fail
     'defaultresponse': 'CNAME .',
     'categories': {},
-    'blacklists': {
-        'StevenBlack': {
-            'url': 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts',
-            'format': 'hosts',
-            'hostskey': '0.0.0.0',
-            # sanity checks
-            'sane_size_min': 1048576,
-            'sane_size_max': 2097152,
-            # 'sane_line_max': 256,
-            # 'sane_line_re': r'',
-            # 'cache_sane_age_days': 90,
-            # and in post-processing:
-            # 'ignore_line_exact': ['line must match this exactly after strip()'],
-            # 'ignore_line_startswith': ['line must match start of line'],
-        },
-    },
+    'blacklists': [
+        # user must make their own choices on blacklists
+    ],
     'exclusions': {},
 }
 
@@ -818,9 +805,13 @@ def main():
         time_now = time.time()
         if not isinstance(config['blacklists'], list):
             raise FatalErrorStop("Old style config file - please update before use")
+        if not config['blacklists']:
+            raise FatalErrorStop("Empty blacklist - please configured before use")
         for info in config['blacklists']:
             logging.info("processing %s", info['url'])
-            if info['format'] in ('hosts', 'raw'):
+            if info['format'] == 'abp':
+                info['sane_line_comment_ignore'] = '!'
+            elif info['format'] in ('hosts', 'raw'):
                 info['sane_line_comment_ignore'] = '#'
             elif info['format'] == 'rpz':
                 info['sane_line_comment_ignore'] = ';'
@@ -863,11 +854,68 @@ def main():
             zone.add_comment(" Source: {}".format(info['url']))
             zone.add_comment("=============================================================================")
             zone.add_blank()
+            # prepare regex ignores if any
+            ignore_line_regex = []
+            for ignore_regex in info.get('ignore_line_regex', []):
+                ignore_line_regex.append(re.compile(ignore_regex))
             # process data
             recordcount = 0
             logging.info("processing cached file %s", info['_cachefile'])
             with open(info['_cachefile'], 'rt') as f_cache:
-                if info['format'] == 'hosts':
+                if info['format'] == 'abp':
+                    # comments start "!" and starts []
+                    for line in f_cache:
+                        line = line.rstrip('\r\n')
+                        # ignore lines
+                        if line in info.get('ignore_line_exact', []):
+                            zone.add_comment("# IGNORE: " + line)
+                            continue
+                        elif 'ignore_line_startswith' in info:
+                            ignore_match = False
+                            for ignore in info['ignore_line_startswith']:
+                                if line.startswith(ignore):
+                                    ignore_match = True
+                                    break
+                            if ignore_match:
+                                zone.add_comment("# IGNORE: " + line)
+                                continue
+                        elif 'ignore_line_regex' in info:
+                            ignore_match = False
+                        ignore_match = False
+                        for ignore_regex in ignore_line_regex:
+                            if re.search(ignore_regex, line):
+                                ignore_match = True
+                                break
+                        if ignore_match:
+                            zone.add_comment("# IGNORE: " + line)
+                            continue
+                        # remove header
+                        if line.startswith('[') and line.endswith(']'):
+                            if line != '[AdBlockPlus 2.0]':
+                                raise RuntimeError(f"{info['url']}: Unhandled version string: {line}")
+                            continue
+                        # separate comments
+                        match = re.fullmatch(r'!(.*)', line)
+                        if match:
+                            zone.add_comment(match.group(1).lstrip())
+                            continue
+                        line = line.rstrip()
+                        if not line:
+                            continue
+                        # process the line - poorly defined, uses regex which we won't do
+                        match = re.fullmatch(r'\|\|([^\$]+)(?:\$(.+))?', line)
+                        if not match:
+                            raise RuntimeError(f"{info['url']}: Bad line doesn't match format {info['format']}: {line}")
+                        host = match.group(1)
+                        if not re.fullmatch(r'[\w\-\.]+', host):
+                            zone.add_comment("# UNSUPPORTED: " + line)
+                            continue
+                        for host in hostlist[1:]:
+                            if not HOST_SANITIY_RE.fullmatch(host):
+                                raise FatalErrorStop(f"{info['url']}: Bad line doesn't match format {info['format']}: {line}")
+                            recordcount += 1
+                            zone.add_host(host, info['url'])
+                elif info['format'] == 'hosts':
                     # comments start "#", we only take lines matching "hostskey"
                     for line in f_cache:
                         line = line.rstrip('\r\n')
@@ -884,6 +932,16 @@ def main():
                             if ignore_match:
                                 zone.add_comment("# IGNORE: " + line)
                                 continue
+                        elif 'ignore_line_regex' in info:
+                            ignore_match = False
+                        ignore_match = False
+                        for ignore_regex in ignore_line_regex:
+                            if re.search(ignore_regex, line):
+                                ignore_match = True
+                                break
+                        if ignore_match:
+                            zone.add_comment("# IGNORE: " + line)
+                            continue
                         # separate comments that could be whole line or after a record
                         match = re.fullmatch(r'([^#]*?)#(.*)', line)
                         if match:
@@ -895,13 +953,13 @@ def main():
                         # process the host line
                         hostlist = re.split(r'\s+', line)
                         if len(hostlist) < 2:
-                            raise RuntimeError("Bad line doesn't match format {}: {}".format(info['format'], line))
+                            raise RuntimeError(f"{info['url']}: Bad line doesn't match format {info['format']}: {line}")
                         if hostlist[0] != info['hostskey']:
                             # not a matching key
                             continue
                         for host in hostlist[1:]:
                             if not HOST_SANITIY_RE.fullmatch(host):
-                                raise FatalErrorStop("Bad line doesn't match format {}: {}".format(info['format'], line))
+                                raise FatalErrorStop(f"{info['url']}: Bad line doesn't match format {info['format']}: {line}")
                             recordcount += 1
                             zone.add_host(host, info['url'])
                 elif info['format'] == 'raw':
@@ -921,6 +979,14 @@ def main():
                             if ignore_match:
                                 zone.add_comment("# IGNORE: " + line)
                                 continue
+                        ignore_match = False
+                        for ignore_regex in ignore_line_regex:
+                            if re.search(ignore_regex, line):
+                                ignore_match = True
+                                break
+                        if ignore_match:
+                            zone.add_comment("# IGNORE: " + line)
+                            continue
                         # separate comments that could be whole line or after a record
                         match = re.fullmatch(r'([^#]*?)#(.*)', line)
                         if match:
@@ -932,7 +998,7 @@ def main():
                         # process the raw (host only) line
                         host = line.strip()
                         if not HOST_SANITIY_RE.fullmatch(host):
-                            raise FatalErrorStop("Bad line doesn't match format {}: {}".format(info['format'], line))
+                            raise FatalErrorStop(f"{info['url']}: Bad line doesn't match format {info['format']}: {line}")
                         recordcount += 1
                         zone.add_host(host, info['url'])
                 elif info['format'] == 'rpz':
@@ -951,6 +1017,14 @@ def main():
                                     break
                             if ignore_match:
                                 zone.add_comment("# IGNORE: " + line)
+                                continue
+                        ignore_match = False
+                        for ignore_regex in ignore_line_regex:
+                            if re.search(ignore_regex, line):
+                                ignore_match = True
+                                break
+                        if ignore_match:
+                            zone.add_comment("# IGNORE: " + line)
                             continue
                         # separate comments that could be whole line or after a record
                         match = re.fullmatch(r'([^;]*?);(.*)', line)
@@ -970,15 +1044,15 @@ def main():
                         # process the zone lines
                         host, response = line.strip().split(None, 1)
                         if not re.fullmatch(r'CNAME\s+\.', response):
-                            raise FatalErrorStop("rpz response not as expected: {}".format(line))
+                            raise FatalErrorStop(f"{info['url']}: rpz response not as expected: {line}")
                         if not HOST_SANITIY_RE.fullmatch(host):
-                            raise FatalErrorStop("Bad line doesn't match format {}: {}".format(info['format'], line))
+                            raise FatalErrorStop(f"{info['url']}: Bad line doesn't match format {info['format']}: {line}")
                         recordcount += 1
                         zone.add_host(host, info['url'], allow_wildcard=True)
                 else:
-                    raise FatalErrorStop("Unknown format {} for {}".format(info['format'], info['url']))
+                    raise FatalErrorStop(f"Unknown format {info['format']} for {info['url']}")
             if recordcount == 0:
-                raise FatalErrorStop("Got record count of {:d} for {}".format(recordcount, info['url']))
+                raise FatalErrorStop(f"Got record count of {recordcount} for {info['url']}")
             # stats for this srouce
             zone.stats_source(info['url'])
 
