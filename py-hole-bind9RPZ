@@ -125,6 +125,9 @@ class ZoneFile:
         """
         # tidy host and sanity check
         host = host.lower().strip()
+        if host.startswith('.') or host.endswith('.'):
+            host = host.strip('.')
+            logging.warning("Stripping leading/trailing '.' for: %s", source)
         sanity_re = HOST_SANITIY_WILDCARD_RE if allow_wildcard else HOST_SANITIY_RE
         if not sanity_re.fullmatch(host):
             if allow_wildcard:
