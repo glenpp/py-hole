@@ -1,4 +1,18 @@
 ---
+################################################################################
+# Example configuration
+################################################################################
+#
+# You must create a suitable configuration for yorself. The treat lanscape is
+# constantly changing so you will need to maintain the configuration as the
+# source data changes.
+#
+# Sanity checks provide some mitigation against bad upstream data. Options allow
+# for specific lines to be ignored to allow other data in the file to be used
+# even when there might be some specific known bad lines. Use with caution!
+#
+################################################################################
+#
 # cachedir: /var/local/bindRPZ
 # cacheprefix: bindRPZcache-
 # cache_sane_age_days: 14   # after which this will fail
@@ -7,7 +21,6 @@
 # cache_time_max: 604800  # 7 days default
 # fetch_user: nobody
 # fetch_group: nogroup
-reloadzonecommand: [ 'rndc', 'reload', 'rpz.example.com' ]
 # defaultresponse: CNAME .
 
 # blacklists can be put into catgories - "default" will be used where no category is provided

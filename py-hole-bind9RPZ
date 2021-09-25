@@ -98,13 +98,11 @@ class ZoneFile:
                 break
 
     def add_comment(self, comment):
-        """Add a comment line
-        """
+        """Add a comment line"""
         self.output_lines.append(";{}\n".format(comment))
 
     def add_blank(self):
-        """Add a blank line
-        """
+        """Add a blank line"""
         self.output_lines.append("\n")
 
     def _stats_skip_increment(self, source, reason):
@@ -132,8 +130,7 @@ class ZoneFile:
         if not sanity_re.fullmatch(host):
             if allow_wildcard:
                 raise FatalErrorStop("bad wildcard host doesn't match format: {}".format(host))
-            else:
-                raise FatalErrorStop("bad host doesn't match format: {}".format(host))
+            raise FatalErrorStop("bad host doesn't match format: {}".format(host))
         # keep track of stats
         self.stats_totals[source] = self.stats_totals.get(source, 0) + 1
         # exclude hosts we've already seen
@@ -866,7 +863,7 @@ def main():
                         if line in info.get('ignore_line_exact', []):
                             zone.add_comment("# IGNORE: " + line)
                             continue
-                        elif 'ignore_line_startswith' in info:
+                        if 'ignore_line_startswith' in info:
                             ignore_match = False
                             for ignore in info['ignore_line_startswith']:
                                 if line.startswith(ignore):
@@ -919,7 +916,7 @@ def main():
                         if line in info.get('ignore_line_exact', []):
                             zone.add_comment("# IGNORE: " + line)
                             continue
-                        elif 'ignore_line_startswith' in info:
+                        if 'ignore_line_startswith' in info:
                             ignore_match = False
                             for ignore in info['ignore_line_startswith']:
                                 if line.startswith(ignore):
@@ -966,7 +963,7 @@ def main():
                         if line in info.get('ignore_line_exact', []):
                             zone.add_comment("# IGNORE: " + line)
                             continue
-                        elif 'ignore_line_startswith' in info:
+                        if 'ignore_line_startswith' in info:
                             ignore_match = False
                             for ignore in info['ignore_line_startswith']:
                                 if line.startswith(ignore):
@@ -1005,7 +1002,7 @@ def main():
                         if line in info.get('ignore_line_exact', []):
                             zone.add_comment("# IGNORE: " + line)
                             continue
-                        elif 'ignore_line_startswith' in info:
+                        if 'ignore_line_startswith' in info:
                             ignore_match = False
                             for ignore in info['ignore_line_startswith']:
                                 if line.startswith(ignore):
@@ -1068,6 +1065,7 @@ def main():
                 zone.add_host(host, args.config, allow_wildcard=True)
     except FatalErrorStop as exc:
         logging.error(exc.args[0])
+        logging.debug("Check your config is consistent with blacklists configured!")
         sys.exit(exc.args[0])
     except SystemExit:
         raise
