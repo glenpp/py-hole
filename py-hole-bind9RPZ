@@ -501,7 +501,7 @@ class FetchCache:
         if not pid:
             # child process - this safely fetches the data
             self._safe_fetch_child(url, config, head_only)
-            return
+            return None
         # parent process
         # read data coming back
         data = b''
@@ -545,19 +545,19 @@ class FetchCache:
                 logging.exception("Exception while decoding header")
         if metadata is not None:
             # good header - re-log any logs we have
-                for log in metadata['logs'].splitlines():
-                    parts = log.split(']: ', 1)
-                    if len(parts) == 2:
-                        pid, log = parts
-                        _, pid = pid.split('[', 1)
-                        level, log = log.split(' - ', 1)
-                    else:
-                        # another line in the last log
-                        log = parts[0]
-                    msg = "child[{}]: {}".format(pid, log)
-                    if level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
-                        raise ValueError("Unhanled level: {}".format(level))
-                    getattr(logging, level.lower())(msg)
+            for log in metadata['logs'].splitlines():
+                parts = log.split(']: ', 1)
+                if len(parts) == 2:
+                    pid, log = parts
+                    _, pid = pid.split('[', 1)
+                    level, log = log.split(' - ', 1)
+                else:
+                    # another line in the last log
+                    log = parts[0]
+                msg = "child[{}]: {}".format(pid, log)
+                if level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+                    raise ValueError("Unhanled level: {}".format(level))
+                getattr(logging, level.lower())(msg)
         else:
             # something went wrong - log child process output
             if header is not None:
@@ -585,6 +585,7 @@ class FetchCache:
         :param config: dict, configuration specific to this fetch, see safe_fetch() and for caching:
             cache_time_max: int, optional maximum time to cache, overrides self.cache_time_max
             cache_time_min: int, optional minimum time to cache, overrides self.cache_time_min
+            fetch_head: bool, optional with default True enables checking head for changes first
         :returns: str, path of cached file that has been downloaded
         """
         cache_path = self.path(url)
@@ -624,7 +625,7 @@ class FetchCache:
 
         # head first with files having Last-Modified header
         skip_fetch = False
-        if 'last_modified' in cache_info or 'etag' in cache_info:
+        if config.get('fetch_head', True) and ('last_modified' in cache_info or 'etag' in cache_info):
             # safely fetch as alow-privelege with sanity checks
             request_success, metadata, data = self.safe_fetch(url, config, head_only=True)
             if not request_success:
@@ -704,14 +705,6 @@ class FetchCache:
         self.cache_status[url] = cache_info
         self.save_status()
         return cache_path
-
-
-
-
-
-
-
-
 
 
 def main():

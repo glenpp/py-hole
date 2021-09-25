@@ -104,6 +104,8 @@ blacklists:
 #   sane_line_re: optional, use different regex used for sanity checking lines than default
 #   cache_sane_age_days: optional, specify an age limit to accept older than default files
 #   ignore_line_exact: optional, list of exact lines to ignore when matched during processing files
+#   ignore_line_startswith: optional, list of exact line beginnings to ignore when matched during processing files
+#   fetch_head: optional, set to False to disable pre-check for changes from HEAD
 #
 # currently we support formats of:
 #   * raw
