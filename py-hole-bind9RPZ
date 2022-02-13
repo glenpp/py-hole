@@ -884,7 +884,7 @@ def main():
                             continue
                         # remove header
                         if line.startswith('[') and line.endswith(']'):
-                            if line != '[AdBlockPlus 2.0]':
+                            if line not in ('[AdBlockPlus 2.0]', '[AdBlockPlus 1.1]'):
                                 raise RuntimeError(f"{info['url']}: Unhandled version string: {line}")
                             continue
                         # separate comments
