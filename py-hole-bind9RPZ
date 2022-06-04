@@ -221,6 +221,7 @@ class FetchCache:
         """Setup cachhe & http collector
 
         :kw user_agent: str, optional custom user agent string
+        :kw proxy: str, proxy to use
         :kw fetch_user: str, optional custom user to perform http fetch as (defualt nobody)
         :kw fetch_group: str, optional custom group to perform http fetch as (defualt nogroup)
         :kw cache_time_min: int, optional mimimum seconds to cache a file for (default 1h)
@@ -241,6 +242,11 @@ class FetchCache:
         self.session.headers = {
             'User-Agent': kwargs_clean.get('user_agent', 'Python HTTP Fetch & Cache'),
         }
+        if kwargs_clean.get('proxy'):
+            self.session.proxies = {
+                'http': kwargs_clean['proxy'],
+                'https': kwargs_clean['proxy'],
+            }
         # setup configuration parameters
         self.fetch_user = kwargs_clean.get('fetch_user', 'nobody')
         self.fetch_group = kwargs_clean.get('fetch_group', 'nogroup')
@@ -779,6 +785,7 @@ def main():
         cacher = FetchCache(
             config['cachedir'],
             user_agent=USER_AGENT,
+            proxy=config.get('proxy'),
             fetch_user=config.get('fetch_user'),
             fetch_group=config.get('fetch_group'),
             cache_time_min=config.get('cache_time_min'),

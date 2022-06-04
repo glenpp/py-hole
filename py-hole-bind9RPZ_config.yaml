@@ -21,6 +21,7 @@
 # cache_time_max: 604800  # 7 days default
 # fetch_user: nobody
 # fetch_group: nogroup
+# proxy: http://some.proxy.local:3128
 # defaultresponse: CNAME .
 
 # blacklists can be put into catgories - "default" will be used where no category is provided
