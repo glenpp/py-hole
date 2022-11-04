@@ -88,7 +88,7 @@ blacklists:
     hostskey: 0.0.0.0
     # sanity checks
     sane_size_min: 1048576
-    sane_size_max: 2097152
+    sane_size_max: 1073741824
     sane_line_max: 512  # can have some long comments
 
   - url: https://urlhaus.abuse.ch/downloads/rpz/
@@ -98,7 +98,7 @@ blacklists:
     format: rpz
     # sanity checks
     sane_size_min: 32768
-    sane_size_max: 262144
+    sane_size_max: 1048576
 
 #  - url: https://v.firebog.net/hosts/Easyprivacy.txt
 #    format: raw
