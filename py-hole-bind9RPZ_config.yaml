@@ -21,7 +21,8 @@
 # cache_time_max: 604800  # 7 days default
 # fetch_user: nobody
 # fetch_group: nogroup
-# proxy: http://some.proxy.local:3128
+# proxy: http://proxy.example.com:3128
+# see responses https://www.zytrax.com/books/dns/ch7/rpz.html#policy-defs
 # defaultresponse: CNAME .
 
 # blacklists can be put into catgories - "default" will be used where no category is provided
@@ -31,6 +32,7 @@ categories:
     # this is used when no category is specified in a blacklist
     rpz_file: /etc/bind/db.rpz.example.com
     reload_zone_command: [ 'rndc', 'reload', 'rpz.example.com' ]
+    # response: CNAME .
     rpz_template: |
       ; see http://www.zytrax.com/books/dns/ch9/rpz.html
       ; zone file rpz.example.com
@@ -55,6 +57,7 @@ categories:
   malicious:
     rpz_file: /etc/bind/db.rpz-malicious.example.com
     reload_zone_command: [ 'rndc', 'reload', 'rpz-malicious.example.com' ]
+    response: CNAME rpz-drop.
     rpz_template: |
       ; see http://www.zytrax.com/books/dns/ch9/rpz.html
       ; zone file rpz-malicious.example.com
@@ -66,8 +69,8 @@ categories:
       ;         NS  nonexistant.nodomain.none
       NS  dnsserver.example.com.
       
-      ;example.net CNAME .
-      ;*.example.net CNAME .
+      ;example.net CNAME rpz-drop.
+      ;*.example.net CNAME rpz-drop.
       
       ; Automatic rules start
       ;
@@ -88,7 +91,7 @@ blacklists:
     hostskey: 0.0.0.0
     # sanity checks
     sane_size_min: 1048576
-    sane_size_max: 2097152
+    sane_size_max: 8388608
     sane_line_max: 512  # can have some long comments
 
   - url: https://urlhaus.abuse.ch/downloads/rpz/
@@ -99,6 +102,7 @@ blacklists:
     # sanity checks
     sane_size_min: 32768
     sane_size_max: 262144
+
 
 #  - url: https://v.firebog.net/hosts/Easyprivacy.txt
 #    format: raw
@@ -112,6 +116,7 @@ blacklists:
 #   category: optional, specify a category (defined above) else "default" is used
 #   format: required, specify the format the file is in (see below)
 #   hostskey: required for "hosts" format (see below)
+#   jmespath: for json one filter mechanism is required (like this), list of expressions
 #   sane_size_min: required, minimum accepted size in bytes (ie. protect against truncated, empty or other too small files)
 #   sane_size_max: required, maximum accepted size in bytes (ie. protect against runaway lists or other impact scenarios)
 #   sane_line_max: optional, change the defualt line length limit
@@ -129,6 +134,10 @@ blacklists:
 #       - considers anything after "#" as comments
 #       - requires "hostskey" matching the IP at the start of the line (any other IPs are ignored)
 #       - multiple hosts per line (typical hosts file with aliases)
+#   * json
+#       - requires some filter such as jmespath to extract hosts
+#       - usual ignore mechanisms work but apply to extracted hosts rather than lines
+#       - no regex checks are done on downloaded data (currently) due to strict format
 #   * rpz
 #       - considers anything after ";" as comments
 #       - skips $TTL, SOA and NS lines
@@ -136,6 +145,8 @@ blacklists:
 
 
 exclusions:
+# see also option of separate allow-list
+# this will allos specific items to have say "rpz-passthru." allowing wildcard matches for others
   trackersimulator.org: true  # eff testing
   eviltracker.net: true # eff testing
   do-not-tracker.org: true  # eff testing
