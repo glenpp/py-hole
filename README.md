@@ -42,10 +42,13 @@ I am working on Cacti templates for monitoring bind, but since the volume of sta
 
 To get this working you need the config file /etc/bind/py-hole-bind9RPZ_config.yaml which you can use the template to start off with. The options should be straight forward in the comments of the file. You need to ensure that the rpzfile, rpztemplate (provides the header to the zone file) and reloadzonecommand (list of arguments) match your configuration. The remainder are things you can tweak.
 
-There are two source formats supported:
+There are some source formats supported:
 
 - **raw** - this is simply a list of hosts, one per line, and we assume lines starting with "#" are comments.
 - **hosts** - this is the standard /etc/hosts format, and here we need a hostkey specifier to match the IP from the hosts file that blacklisted hosts use.
+- **abp** - Adblock Plus format.
+- **json** - JSON data with appropriate selectors.
+- **rpz** - native format directly.
 
 Once you have a config file then you can run the Python script. This will download the source lists to a cache location (specified in the config or defaulting to /var/local/bindRPZ) and process them into your output file specified by rpzfile in the config.
 
