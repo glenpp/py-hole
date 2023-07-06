@@ -30,6 +30,7 @@ import argparse
 import pwd
 import grp
 import json
+import jmespath
 import glob
 import logging
 import logging.config
@@ -80,6 +81,7 @@ class ZoneFile:
         """
         self.config = config
         self.category = config['categories'][category]
+        self.category_response = self.category.get('response', self.config['defaultresponse'])
         outputdata = self.category['rpz_template']
         outputdata = outputdata.replace(r'<SERIAL>', '{:010d}'.format(int(time.time())))
         self.output_lines = outputdata.splitlines(keepends=True)
@@ -129,17 +131,17 @@ class ZoneFile:
         sanity_re = HOST_SANITIY_WILDCARD_RE if allow_wildcard else HOST_SANITIY_RE
         if not sanity_re.fullmatch(host):
             if allow_wildcard:
-                raise FatalErrorStop("bad wildcard host doesn't match format: {}".format(host))
-            raise FatalErrorStop("bad host doesn't match format: {}".format(host))
+                raise FatalErrorStop(f"bad wildcard host doesn't match format: {host}")
+            raise FatalErrorStop(f"bad host doesn't match format: {host}")
         # keep track of stats
         self.stats_totals[source] = self.stats_totals.get(source, 0) + 1
         # exclude hosts we've already seen
         if host in self.seen_before:
-            self.output_lines.append("; seenbefore in {} {}\n".format(self.seen_before[host], host))
+            self.output_lines.append(f'; seenbefore in {self.seen_before[host]} {host}\n')
             self._stats_skip_increment(source, "seenbefore")
         # exclude hosts we've explicitly set as excluded
         if host in self.config['exclusions']:
-            self.output_lines.append("; excluded {}\n".format(host))
+            self.output_lines.append(f'; excluded {host}\n')
             self._stats_skip_increment(source, "excluded")
             # also keep track of excludes
             if host not in self.excludes_used:
@@ -148,11 +150,11 @@ class ZoneFile:
             return
         # try add the line
         # limit from https://www.ietf.org/rfc/rfc1035.txt
-        outputline = "{} {}\n".format(host, self.config['defaultresponse'])
+        outputline = f'{host} {self.category_response}\n'
         total_length = len(host.rstrip('.')) + 1 + self.zone_length
         if total_length > SANE_RECORD_MAX:
             # TODO is it practical to turn this into a wildcard to retain safety?
-            self.output_lines.append(';toolong in {} {}\n'.format(source, host))
+            self.output_lines.append(f';toolong in {source} {host}\n')
             self._stats_skip_increment(source, "toolong")
             return
         self.output_lines.append(outputline)
@@ -449,7 +451,7 @@ class FetchCache:
                 if 'sane_line_comment_ignore' in fetch_config:
                     check_line = check_line.split(fetch_config['sane_line_comment_ignore'])[0]
                     check_line = check_line.rstrip()
-                if not line_re.fullmatch(check_line):
+                if fetch_config['format'] != 'json' and not line_re.fullmatch(check_line):
                     logging.error("Line %d no match for regex: %s", i + 1, check_line)
                     raise self._ChildFail(self.EXIT_SANITY)
             # format output to json metadata + body
@@ -813,6 +815,8 @@ def main():
                 info['sane_line_comment_ignore'] = '!'
             elif info['format'] in ('hosts', 'raw'):
                 info['sane_line_comment_ignore'] = '#'
+            elif info['format'] == 'json':
+                pass
             elif info['format'] == 'rpz':
                 info['sane_line_comment_ignore'] = ';'
             else:
@@ -962,6 +966,40 @@ def main():
                                 raise FatalErrorStop(f"{info['url']}: Bad line doesn't match format {info['format']}: {line}")
                             recordcount += 1
                             zone.add_host(host, info['url'])
+                elif info['format'] == 'json':
+                    data = json.load(f_cache)
+                    filter_count = 0
+                    if 'jmespath' in info:
+                        filter_count += 1
+                        for path in info['jmespath']:
+                            expression = jmespath.compile(path)
+                            for host in expression.search(data):
+                                # ignore lines
+                                if host in info.get('ignore_line_exact', []):
+                                    zone.add_comment("# IGNORE: " + line)
+                                    continue
+                                if 'ignore_line_startswith' in info:
+                                    ignore_match = False
+                                    for ignore in info['ignore_line_startswith']:
+                                        if host.startswith(ignore):
+                                            ignore_match = True
+                                            break
+                                    if ignore_match:
+                                        zone.add_comment("# IGNORE: " + host)
+                                        continue
+                                ignore_match = False
+                                for ignore_regex in ignore_line_regex:
+                                    if re.search(ignore_regex, host):
+                                        ignore_match = True
+                                        break
+                                if ignore_match:
+                                    zone.add_comment("# IGNORE: " + host)
+                                    continue
+                                # have a safe record
+                                recordcount += 1
+                                zone.add_host(host, info['url'])
+                    if not filter_count:
+                        raise FatalErrorStop("Must have at least one filter for format json")
                 elif info['format'] == 'raw':
                     # comments start "#"
                     for line in f_cache:
@@ -1050,7 +1088,7 @@ def main():
                         recordcount += 1
                         zone.add_host(host, info['url'], allow_wildcard=True)
                 else:
-                    raise FatalErrorStop(f"Unknown format {info['format']} for {info['url']}")
+                    raise FatalErrorStop(f"Unknown format {info['format']} processing {info['url']}")
             if recordcount == 0:
                 raise FatalErrorStop(f"Got record count of {recordcount} for {info['url']}")
             # stats for this srouce
